@@ -1,6 +1,5 @@
 import os
 import random
-import time
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import telebot
@@ -20,7 +19,6 @@ def get_db():
 def init_db():
     conn = get_db()
     cur = conn.cursor()
-    # ساخت جدول کاربران با تمام ستون‌های جدید
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -33,13 +31,13 @@ def init_db():
             admin_step VARCHAR(50) DEFAULT NULL
         );
     """)
-    # اضافه کردن ستون‌های جدید به جدول قدیمی (در صورتی که از قبل ساخته شده باشه)
-    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captcha_passed BOOLEAN DEFAULT FALSE;")
-    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captcha_code INT DEFAULT NULL;")
-    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS await_username_reward VARCHAR(100) DEFAULT NULL;")
-    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_step VARCHAR(50) DEFAULT NULL;")
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captcha_passed BOOLEAN DEFAULT FALSE;")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captcha_code INT DEFAULT NULL;")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS await_username_reward VARCHAR(100) DEFAULT NULL;")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_step VARCHAR(50) DEFAULT NULL;")
+    except: pass
     
-    # ساخت جدول چنل‌های اجباری
     cur.execute("""
         CREATE TABLE IF NOT EXISTS force_channels (
             channel_username VARCHAR(255) PRIMARY KEY
@@ -71,9 +69,11 @@ def get_user(user_id):
     cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
     user = cur.fetchone()
     if not user:
-        cur.execute("INSERT INTO users (user_id) VALUES (%s) RETURNING *", (user_id,))
-        user = cur.fetchone()
+        cur.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
         conn.commit()
+        cur.close()
+        conn.close()
+        return None
     cur.close()
     conn.close()
     return user
@@ -91,11 +91,12 @@ def update_user(user_id, **kwargs):
 
 def add_points(user_id, amount):
     user = get_user(user_id)
-    update_user(user_id, points=user["points"] + amount)
+    if user:
+        update_user(user_id, points=user["points"] + amount)
 
 def deduct_points(user_id, amount):
     user = get_user(user_id)
-    if user["points"] >= amount:
+    if user and user["points"] >= amount:
         update_user(user_id, points=user["points"] - amount)
         return True
     return False
@@ -136,7 +137,7 @@ def show_join_buttons(chat_id, channels):
         channel_url = f"https://t.me/{ch.replace('@','')}"
         markup.add(types.InlineKeyboardButton(f"عضویت در {ch}", url=channel_url))
     markup.add(types.InlineKeyboardButton("✅ عضو شدم", callback_data="check_join"))
-    bot.send_message(chat_id, "برای استفاده باید عضو چنل‌های زیر بشی:", reply_markup=markup)
+    bot.send_message(chat_id, "⚠️ برای استفاده از ربات، ابتدا باید در چنل‌های زیر عضو شوید:", reply_markup=markup)
 
 # --- استارت و کپچا ---
 @bot.message_handler(commands=['start'])
@@ -144,51 +145,30 @@ def start(message):
     user_id = message.from_user.id
     user = get_user(user_id)
 
-    # پردازش رفرال
-    args = message.text.split()
-    if len(args) > 1 and args[1].isdigit():
-        referrer_id = int(args[1])
-        if referrer_id != user_id and not user.get("is_verified"):
-            update_user(referrer_id, referrals=get_user(referrer_id)["referrals"] + 1)
-            add_points(referrer_id, 1)
-            try:
-                bot.send_message(referrer_id, "🎉 یک نفر با لینک شما وارد شد! +۱ امتیاز")
-            except:
-                pass
-
-    # اگر کاربر تایید شده بود
-    if user.get("is_verified"):
-        not_joined = check_channels(user_id)
-        if not not_joined:
-            bot.send_message(message.chat.id, "خوش اومدی داداش! 👋\nاز منو انتخاب کن:", reply_markup=main_keyboard())
-            return
-        else:
-            show_join_buttons(message.chat.id, not_joined)
-            return
-
-    # اگر کپچا رو قبلا رد کرده بود ولی هنوز تو چنل نبود
-    if user.get("captcha_passed"):
-        not_joined = check_channels(user_id)
-        if not not_joined:
-            update_user(user_id, is_verified=True)
-            bot.send_message(message.chat.id, "✅ تایید شد! خوش اومدی داداش.\nاز منو زیر انتخاب کن:", reply_markup=main_keyboard())
-        else:
-            show_join_buttons(message.chat.id, not_joined)
+    # اگر کاربر جدید بود -> کپچا
+    if user is None:
+        a = random.randint(10, 20)
+        b = a + random.randint(1, 5)
+        options = [a, b]
+        random.shuffle(options)
+        
+        update_user(user_id, captcha_code=a)
+        
+        markup = types.InlineKeyboardMarkup()
+        for opt in options:
+            markup.add(types.InlineKeyboardButton(str(opt), callback_data=f"cap_{opt}"))
+            
+        bot.send_message(message.chat.id, f"برای شروع، روی عدد **{a}** کلیک کن:", reply_markup=markup, parse_mode="Markdown")
         return
 
-    # کاربر جدید -> کپچا
-    a = random.randint(10, 20)
-    b = a + random.randint(1, 5)
-    options = [a, b]
-    random.shuffle(options)
-    
-    update_user(user_id, captcha_code=a)
-    
-    markup = types.InlineKeyboardMarkup()
-    for opt in options:
-        markup.add(types.InlineKeyboardButton(str(opt), callback_data=f"cap_{opt}"))
-        
-    bot.send_message(message.chat.id, f"برای شروع، روی عدد **{a}** کلیک کن:", reply_markup=markup, parse_mode="Markdown")
+    # کاربر قبلا بوده -> دیگه کپچا نده!
+    not_joined = check_channels(user_id)
+    if not not_joined:
+        if not user.get("is_verified"):
+            update_user(user_id, is_verified=True)
+        bot.send_message(message.chat.id, "خوش اومدی داداش! 👋\nاز منو انتخاب کن:", reply_markup=main_keyboard())
+    else:
+        show_join_buttons(message.chat.id, not_joined)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('cap_'))
 def handle_captcha(call):
@@ -196,8 +176,12 @@ def handle_captcha(call):
     ans = int(call.data.split('_')[1])
     user = get_user(user_id)
     
+    if not user:
+        bot.answer_callback_query(call.id, "خطا. دوباره /start بزن.")
+        return
+        
     if user.get("captcha_passed"):
-        bot.answer_callback_query(call.id, "شما قبلا کپچا را رد کرده‌اید.")
+        bot.answer_callback_query(call.id, "قبلا رد کردی!")
         return
 
     if ans == user.get("captcha_code"):
@@ -209,13 +193,14 @@ def handle_captcha(call):
         except:
             pass
             
+        # چک میکنیم تو چنل هست یا نه
         not_joined = check_channels(user_id)
         if not not_joined:
+            # اگر تو چنل بود
             update_user(user_id, is_verified=True)
-            bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.")
-            time.sleep(0.5) # تاخیر برای رفرش کیبورد
-            bot.send_message(call.message.chat.id, "👇 از منو زیر انتخاب کن:", reply_markup=main_keyboard())
+            bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.\nاز منو زیر انتخاب کن:", reply_markup=main_keyboard())
         else:
+            # اگر تو چنل نبود، دکمه‌های عضویت رو بفرست
             show_join_buttons(call.message.chat.id, not_joined)
     else:
         bot.answer_callback_query(call.id, "❌ اشتباهه! دوباره /start بزن.")
@@ -228,20 +213,13 @@ def check_join(call):
     
     if not not_joined:
         update_user(user_id, is_verified=True)
-        
-        # ۱. پاک کردن پیام عضویت
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
             pass
-            
-        # ۲. ارسال پیام تایید اول (بدون کیبورد)
+        
+        # وقتی عضو شد، پیام تایید و کیبورد رو بفرست
         bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.")
-        
-        # ۳. تاخیر نیم ثانیه‌ای برای اینکه تلگرام کیبورد قبلی رو پاک کنه
-        time.sleep(0.5)
-        
-        # ۴. ارسال کیبورد اصلی
         bot.send_message(call.message.chat.id, "👇 از منو زیر انتخاب کن:", reply_markup=main_keyboard())
         
     else:
@@ -254,6 +232,7 @@ def show_referral(message):
     username = bot.get_me().username
     link = f"https://t.me/{username}?start={user_id}"
     user = get_user(user_id)
+    if not user: return
     bot.send_message(message.chat.id,
         f"🔗 لینک زیرمجموعه شما:\n{link}\n\n"
         f"👥 تعداد دعوت‌ها: {user['referrals']}\n"
@@ -271,6 +250,7 @@ REWARDS = {
 def handle_reward(message):
     user_id = message.from_user.id
     user = get_user(user_id)
+    if not user: return
     cost = REWARDS[message.text]
 
     if user["points"] < cost:
@@ -288,10 +268,11 @@ def handle_reward(message):
     else:
         bot.reply_to(message, "خطا در کسر امتیاز.")
 
-@bot.message_handler(func=lambda m: get_user(m.from_user.id).get("await_username_reward"))
+@bot.message_handler(func=lambda m: get_user(m.from_user.id) and get_user(m.from_user.id).get("await_username_reward"))
 def receive_username(message):
     user_id = message.from_user.id
     user = get_user(user_id)
+    if not user: return
     reward = user.get("await_username_reward")
     
     update_user(user_id, await_username_reward=None)
@@ -332,57 +313,48 @@ def admin_panel(message):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('admin_'))
 def admin_callbacks(call):
-    if call.from_user.id != OWNER_ID:
-        return
+    if call.from_user.id != OWNER_ID: return
     
     action = call.data
     if action == "admin_add_channel":
         update_user(OWNER_ID, admin_step="add_channel")
-        bot.send_message(OWNER_ID, "لطفاً آیدی چنل را با @ بفرستید (مثال: @MyChannel)\nتوجه: قبل از ارسال، ربات را ادمین چنل کنید.")
+        bot.send_message(OWNER_ID, "لطفاً آیدی چنل را با @ بفرستید:")
         bot.answer_callback_query(call.id)
-        
     elif action == "admin_del_channel":
         channels = get_force_channels()
         if not channels:
             bot.send_message(OWNER_ID, "هیچ چنلی ثبت نشده است.")
             return
-        
         markup = types.InlineKeyboardMarkup()
         for ch in channels:
             markup.add(types.InlineKeyboardButton(f"❌ حذف {ch}", callback_data=f"delch_{ch}"))
         bot.send_message(OWNER_ID, "کدام چنل حذف شود؟", reply_markup=markup)
         bot.answer_callback_query(call.id)
 
-@bot.message_handler(func=lambda m: get_user(m.from_user.id).get("admin_step") == "add_channel")
+@bot.message_handler(func=lambda m: get_user(m.from_user.id) and get_user(m.from_user.id).get("admin_step") == "add_channel")
 def admin_add_channel_receive(message):
-    if message.from_user.id != OWNER_ID:
-        return
+    if message.from_user.id != OWNER_ID: return
     ch = message.text.strip()
-    if not ch.startswith("@"):
-        ch = "@" + ch
-        
+    if not ch.startswith("@"): ch = "@" + ch
     try:
         bot_member = bot.get_chat_member(ch, bot.get_me().id)
         if bot_member.status not in ['administrator', 'creator']:
-            bot.reply_to(message, "❌ ربات در این چنل ادمین نیست! اول ربات را ادمین کنید.")
+            bot.reply_to(message, "❌ ربات در این چنل ادمین نیست!")
             return
-            
         conn = get_db()
         cur = conn.cursor()
         cur.execute("INSERT INTO force_channels (channel_username) VALUES (%s) ON CONFLICT DO NOTHING", (ch,))
         conn.commit()
         cur.close()
         conn.close()
-        
         bot.reply_to(message, f"✅ چنل {ch} با موفقیت اضافه شد.")
         update_user(OWNER_ID, admin_step=None)
     except Exception as e:
-        bot.reply_to(message, f"❌ خطا در بررسی چنل: {e}")
+        bot.reply_to(message, f"❌ خطا: {e}")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('delch_'))
 def admin_delete_channel(call):
-    if call.from_user.id != OWNER_ID:
-        return
+    if call.from_user.id != OWNER_ID: return
     ch = call.data.replace("delch_", "")
     conn = get_db()
     cur = conn.cursor()
