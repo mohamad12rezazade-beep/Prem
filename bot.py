@@ -10,12 +10,10 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 OWNER_ID = 8291994828
 
-DEFAULT_FORCE_CHANNELS = ["@Poneix", "@BET_1XZX"]
-
 bot = telebot.TeleBot(BOT_TOKEN)
 user_states = {}
 
-# --- دیتابیس ---
+# --- اتصال به دیتابیس ---
 def get_db():
     return psycopg2.connect(DATABASE_URL, sslmode='require')
 
@@ -27,23 +25,23 @@ def init_db():
             user_id BIGINT PRIMARY KEY,
             points INT DEFAULT 0,
             is_verified BOOLEAN DEFAULT FALSE,
-            referrals INT DEFAULT 0,
-            created_at TIMESTAMP DEFAULT NOW()
+            referrals INT DEFAULT 0
         );
     """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS force_channels (
-            id SERIAL PRIMARY KEY,
-            channel_username VARCHAR(255) UNIQUE NOT NULL
+            channel_username VARCHAR(255) PRIMARY KEY
         );
     """)
     conn.commit()
     
+    # چنل‌های پیش‌فرض
     cur.execute("SELECT COUNT(*) FROM force_channels")
     if cur.fetchone()[0] == 0:
-        for ch in DEFAULT_FORCE_CHANNELS:
-            cur.execute("INSERT INTO force_channels (channel_username) VALUES (%s) ON CONFLICT DO NOTHING", (ch,))
+        cur.execute("INSERT INTO force_channels VALUES ('@Poneix') ON CONFLICT DO NOTHING")
+        cur.execute("INSERT INTO force_channels VALUES ('@BET_1XZX') ON CONFLICT DO NOTHING")
         conn.commit()
+        
     cur.close()
     conn.close()
 
@@ -128,13 +126,13 @@ def show_join_buttons(chat_id, channels):
     markup.add(types.InlineKeyboardButton("✅ عضو شدم", callback_data="check_join"))
     bot.send_message(chat_id, "برای استفاده باید عضو چنل‌های زیر بشی:", reply_markup=markup)
 
-# --- شروع ربات و کپچا ---
+# --- استارت و کپچا ---
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
     user = get_user(user_id)
 
-    # پردازش رفرال (زیرمجموعه)
+    # رفرال
     args = message.text.split()
     if len(args) > 1 and args[1].isdigit():
         referrer_id = int(args[1])
@@ -146,7 +144,6 @@ def start(message):
             except:
                 pass
 
-    # اگر کاربر قبلا تایید شده بود
     if user.get("is_verified"):
         not_joined = check_channels(user_id)
         if not not_joined:
@@ -156,33 +153,31 @@ def start(message):
             show_join_buttons(message.chat.id, not_joined)
             return
 
-    # اگر کاربر جدید بود -> کپچا
-    num1 = random.randint(1, 9)
-    num2 = random.randint(1, 9)
-    correct = num1 + num2
-    options = list({correct, correct + random.randint(1, 5), correct - random.randint(1, 5)})
+    # کپچای ساده (بدون عدد تصادفی پیچیده)
+    a = random.randint(10, 20)
+    b = a + random.randint(1, 5)
+    options = [a, b]
     random.shuffle(options)
     
     markup = types.InlineKeyboardMarkup()
     for opt in options:
-        markup.add(types.InlineKeyboardButton(str(opt), callback_data=f"captcha_{opt}"))
+        markup.add(types.InlineKeyboardButton(str(opt), callback_data=f"cap_{opt}"))
         
-    user_states[user_id] = {"captcha_answer": correct, "step": "captcha"}
-    bot.send_message(message.chat.id, "سلام! برای شروع حاصل جمع زیر رو انتخاب کن:", reply_markup=markup)
+    user_states[user_id] = {"correct": a, "step": "captcha"}
+    bot.send_message(message.chat.id, f"برای شروع، روی عدد **{a}** کلیک کن:", reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('captcha_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('cap_'))
 def handle_captcha(call):
     user_id = call.from_user.id
     ans = int(call.data.split('_')[1])
     state = user_states.get(user_id)
     
     if not state or state.get("step") != "captcha":
-        bot.answer_callback_query(call.id, "دوباره /start بزن.")
+        bot.answer_callback_query(call.id, "منقضی شده. /start بزن.")
         return
         
-    if ans == state["captcha_answer"]:
+    if ans == state["correct"]:
         bot.answer_callback_query(call.id, "✅ درست بود!")
-        # پاک کردن پیام کپچا
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
@@ -199,7 +194,7 @@ def handle_captcha(call):
     else:
         bot.answer_callback_query(call.id, "❌ اشتباهه! دوباره /start بزن.")
 
-# --- تایید عضویت ---
+# --- چک عضویت ---
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join(call):
     user_id = call.from_user.id
@@ -216,7 +211,7 @@ def check_join(call):
     else:
         bot.answer_callback_query(call.id, f"❌ هنوز عضو نشدی: {', '.join(not_joined)}")
 
-# --- دکمه‌های کیبورد اصلی ---
+# --- منوها ---
 @bot.message_handler(func=lambda m: m.text == "زیر مجموعه")
 def show_referral(message):
     user_id = message.from_user.id
@@ -301,7 +296,6 @@ def admin_panel(message):
 @bot.callback_query_handler(func=lambda c: c.data.startswith('admin_'))
 def admin_callbacks(call):
     if call.from_user.id != OWNER_ID:
-        bot.answer_callback_query(call.id, "دسترسی ندارید.")
         return
     
     action = call.data
@@ -363,7 +357,7 @@ def admin_delete_channel(call):
     bot.edit_message_text(f"✅ چنل {ch} حذف شد.", call.message.chat.id, call.message.message_id)
     bot.answer_callback_query(call.id, "حذف شد")
 
-# --- اجرای ربات ---
+# --- اجرا ---
 if __name__ == "__main__":
     init_db()
     print("Bot running...")
