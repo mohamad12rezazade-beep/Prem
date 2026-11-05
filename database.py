@@ -2,7 +2,6 @@ import os
 import psycopg
 from psycopg.rows import dict_row
 
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
@@ -79,13 +78,7 @@ def create_user(user_id, username=None, referred_by=None):
     with get_conn() as conn:
         with conn.cursor() as cur:
 
-            cur.execute("""
-                SELECT user_id, referred_by
-                FROM users
-                WHERE user_id = %s
-            """, (user_id,))
-
-            existing = cur.fetchone()
+            existing = get_user(user_id)
 
             if existing:
                 cur.execute("""
@@ -93,7 +86,6 @@ def create_user(user_id, username=None, referred_by=None):
                     SET username = %s
                     WHERE user_id = %s
                 """, (username, user_id))
-
             else:
                 cur.execute("""
                     INSERT INTO users
@@ -112,39 +104,33 @@ def create_user(user_id, username=None, referred_by=None):
 def get_user(user_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
-
             cur.execute("""
                 SELECT *
                 FROM users
                 WHERE user_id = %s
             """, (user_id,))
-
             return cur.fetchone()
 
 
 def set_captcha_verified(user_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
-
             cur.execute("""
                 UPDATE users
                 SET captcha_verified = TRUE
                 WHERE user_id = %s
             """, (user_id,))
-
         conn.commit()
 
 
 def set_membership_verified(user_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
-
             cur.execute("""
                 UPDATE users
                 SET membership_verified = TRUE
                 WHERE user_id = %s
             """, (user_id,))
-
         conn.commit()
 
 
@@ -201,30 +187,23 @@ def reward_referrer(user_id):
 
 def get_points(user_id):
     user = get_user(user_id)
-
-    if not user:
-        return 0
-
-    return user["points"]
+    return user["points"] if user else 0
 
 
 def get_forced_channels():
     with get_conn() as conn:
         with conn.cursor() as cur:
-
             cur.execute("""
                 SELECT *
                 FROM forced_channels
                 ORDER BY id
             """)
-
             return cur.fetchall()
 
 
 def add_forced_channel(username, title=None):
     with get_conn() as conn:
         with conn.cursor() as cur:
-
             cur.execute("""
                 INSERT INTO forced_channels
                     (username, title, protected)
@@ -232,24 +211,18 @@ def add_forced_channel(username, title=None):
                     (%s, %s, FALSE)
                 ON CONFLICT (username)
                 DO NOTHING
-            """, (
-                username,
-                title,
-            ))
-
+            """, (username, title))
         conn.commit()
 
 
 def remove_forced_channel(username):
     with get_conn() as conn:
         with conn.cursor() as cur:
-
             cur.execute("""
                 DELETE FROM forced_channels
                 WHERE username = %s
                 AND protected = FALSE
             """, (username,))
-
         conn.commit()
 
 
@@ -271,20 +244,14 @@ def create_order(
 
             user = cur.fetchone()
 
-            if not user:
-                return False
-
-            if user["points"] < points:
+            if not user or user["points"] < points:
                 return False
 
             cur.execute("""
                 UPDATE users
                 SET points = points - %s
                 WHERE user_id = %s
-            """, (
-                points,
-                user_id,
-            ))
+            """, (points, user_id))
 
             cur.execute("""
                 INSERT INTO orders
@@ -314,29 +281,22 @@ def create_order(
 def get_order(order_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
-
             cur.execute("""
                 SELECT *
                 FROM orders
                 WHERE id = %s
             """, (order_id,))
-
             return cur.fetchone()
 
 
 def update_order_status(order_id, status):
     with get_conn() as conn:
         with conn.cursor() as cur:
-
             cur.execute("""
                 UPDATE orders
                 SET status = %s
                 WHERE id = %s
-            """, (
-                status,
-                order_id,
-            ))
-
+            """, (status, order_id))
         conn.commit()
 
 
@@ -345,10 +305,7 @@ def refund_order(order_id):
         with conn.cursor() as cur:
 
             cur.execute("""
-                SELECT
-                    user_id,
-                    points,
-                    status
+                SELECT user_id, points, status
                 FROM orders
                 WHERE id = %s
                 FOR UPDATE
@@ -356,10 +313,7 @@ def refund_order(order_id):
 
             order = cur.fetchone()
 
-            if not order:
-                return False
-
-            if order["status"] != "pending":
+            if not order or order["status"] != "pending":
                 return False
 
             cur.execute("""
