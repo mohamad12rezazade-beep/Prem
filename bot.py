@@ -1,5 +1,4 @@
 import os
-import random
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import telebot
@@ -24,16 +23,12 @@ def init_db():
             user_id BIGINT PRIMARY KEY,
             points INT DEFAULT 0,
             is_verified BOOLEAN DEFAULT FALSE,
-            captcha_passed BOOLEAN DEFAULT FALSE,
-            captcha_code INT DEFAULT NULL,
             referrals INT DEFAULT 0,
             await_username_reward VARCHAR(100) DEFAULT NULL,
             admin_step VARCHAR(50) DEFAULT NULL
         );
     """)
     try:
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captcha_passed BOOLEAN DEFAULT FALSE;")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captcha_code INT DEFAULT NULL;")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS await_username_reward VARCHAR(100) DEFAULT NULL;")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_step VARCHAR(50) DEFAULT NULL;")
     except: pass
@@ -69,11 +64,9 @@ def get_user(user_id):
     cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
     user = cur.fetchone()
     if not user:
-        cur.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
+        cur.execute("INSERT INTO users (user_id) VALUES (%s) RETURNING *", (user_id,))
+        user = cur.fetchone()
         conn.commit()
-        cur.close()
-        conn.close()
-        return None
     cur.close()
     conn.close()
     return user
@@ -139,29 +132,25 @@ def show_join_buttons(chat_id, channels):
     markup.add(types.InlineKeyboardButton("✅ عضو شدم", callback_data="check_join"))
     bot.send_message(chat_id, "⚠️ برای استفاده از ربات، ابتدا باید در چنل‌های زیر عضو شوید:", reply_markup=markup)
 
-# --- استارت و کپچا ---
+# --- استارت ---
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
     user = get_user(user_id)
 
-    # اگر کاربر جدید بود -> کپچا
-    if user is None:
-        a = random.randint(10, 20)
-        b = a + random.randint(1, 5)
-        options = [a, b]
-        random.shuffle(options)
-        
-        update_user(user_id, captcha_code=a)
-        
-        markup = types.InlineKeyboardMarkup()
-        for opt in options:
-            markup.add(types.InlineKeyboardButton(str(opt), callback_data=f"cap_{opt}"))
-            
-        bot.send_message(message.chat.id, f"برای شروع، روی عدد **{a}** کلیک کن:", reply_markup=markup, parse_mode="Markdown")
-        return
+    # رفرال
+    args = message.text.split()
+    if len(args) > 1 and args[1].isdigit():
+        referrer_id = int(args[1])
+        if referrer_id != user_id and not user.get("is_verified"):
+            update_user(referrer_id, referrals=get_user(referrer_id)["referrals"] + 1)
+            add_points(referrer_id, 1)
+            try:
+                bot.send_message(referrer_id, "🎉 یک نفر با لینک شما وارد شد! +۱ امتیاز")
+            except:
+                pass
 
-    # کاربر قبلا بوده -> دیگه کپچا نده!
+    # چک عضویت در چنل‌ها
     not_joined = check_channels(user_id)
     if not not_joined:
         if not user.get("is_verified"):
@@ -170,42 +159,7 @@ def start(message):
     else:
         show_join_buttons(message.chat.id, not_joined)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('cap_'))
-def handle_captcha(call):
-    user_id = call.from_user.id
-    ans = int(call.data.split('_')[1])
-    user = get_user(user_id)
-    
-    if not user:
-        bot.answer_callback_query(call.id, "خطا. دوباره /start بزن.")
-        return
-        
-    if user.get("captcha_passed"):
-        bot.answer_callback_query(call.id, "قبلا رد کردی!")
-        return
-
-    if ans == user.get("captcha_code"):
-        bot.answer_callback_query(call.id, "✅ درست بود!")
-        update_user(user_id, captcha_passed=True, captcha_code=None)
-        
-        try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            pass
-            
-        # چک میکنیم تو چنل هست یا نه
-        not_joined = check_channels(user_id)
-        if not not_joined:
-            # اگر تو چنل بود
-            update_user(user_id, is_verified=True)
-            bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.\nاز منو زیر انتخاب کن:", reply_markup=main_keyboard())
-        else:
-            # اگر تو چنل نبود، دکمه‌های عضویت رو بفرست
-            show_join_buttons(call.message.chat.id, not_joined)
-    else:
-        bot.answer_callback_query(call.id, "❌ اشتباهه! دوباره /start بزن.")
-
-# --- چک عضویت ---
+# --- چک عضویت (بعد از زدن دکمه عضو شدم) ---
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join(call):
     user_id = call.from_user.id
@@ -221,7 +175,6 @@ def check_join(call):
         # وقتی عضو شد، پیام تایید و کیبورد رو بفرست
         bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.")
         bot.send_message(call.message.chat.id, "👇 از منو زیر انتخاب کن:", reply_markup=main_keyboard())
-        
     else:
         bot.answer_callback_query(call.id, f"❌ هنوز عضو اینا نشدی: {', '.join(not_joined)}", show_alert=True)
 
