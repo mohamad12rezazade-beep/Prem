@@ -11,7 +11,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 OWNER_ID = 8291994828
 
 bot = telebot.TeleBot(BOT_TOKEN)
-user_states = {}
 
 # --- اتصال به دیتابیس ---
 def get_db():
@@ -20,16 +19,21 @@ def get_db():
 def init_db():
     conn = get_db()
     cur = conn.cursor()
-    # ستون captcha_passed رو اضافه کردم که بفهمیم کاربر کپچا رو رد کرده یا نه
+    # اضافه کردن ستون‌های کپچا به جدول کاربران
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
             points INT DEFAULT 0,
             is_verified BOOLEAN DEFAULT FALSE,
             captcha_passed BOOLEAN DEFAULT FALSE,
+            captcha_code INT DEFAULT NULL,
             referrals INT DEFAULT 0
         );
     """)
+    # اگر جدول از قبل بوده، ستون‌های جدید رو اضافه کن
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captcha_passed BOOLEAN DEFAULT FALSE;")
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS captcha_code INT DEFAULT NULL;")
+    
     cur.execute("""
         CREATE TABLE IF NOT EXISTS force_channels (
             channel_username VARCHAR(255) PRIMARY KEY
@@ -127,7 +131,7 @@ def show_join_buttons(chat_id, channels):
     markup.add(types.InlineKeyboardButton("✅ عضو شدم", callback_data="check_join"))
     bot.send_message(chat_id, "برای استفاده باید عضو چنل‌های زیر بشی:", reply_markup=markup)
 
-# --- استارت و کپچا ---
+# --- استارت و کپچا (دیتابیسی) ---
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
@@ -145,7 +149,7 @@ def start(message):
             except:
                 pass
 
-    # ۱. اگر کاربر قبلاً تایید شده بود
+    # ۱. اگر تایید شده بود
     if user.get("is_verified"):
         not_joined = check_channels(user_id)
         if not not_joined:
@@ -155,7 +159,7 @@ def start(message):
             show_join_buttons(message.chat.id, not_joined)
             return
 
-    # ۲. اگر کپچا رو قبلاً رد کرده بود ولی هنوز عضو نشده بود
+    # ۲. اگر کپچا رو قبلاً رد کرده بود
     if user.get("captcha_passed"):
         not_joined = check_channels(user_id)
         if not not_joined:
@@ -165,33 +169,37 @@ def start(message):
             show_join_buttons(message.chat.id, not_joined)
         return
 
-    # ۳. اگر کاربر کاملاً جدید بود -> کپچا
+    # ۳. کاربر جدید -> ساخت کپچای دیتابیسی
     a = random.randint(10, 20)
     b = a + random.randint(1, 5)
     options = [a, b]
     random.shuffle(options)
     
+    # ذخیره عدد درست توی دیتابیس
+    update_user(user_id, captcha_code=a)
+    
     markup = types.InlineKeyboardMarkup()
     for opt in options:
         markup.add(types.InlineKeyboardButton(str(opt), callback_data=f"cap_{opt}"))
         
-    user_states[user_id] = {"correct": a, "step": "captcha"}
     bot.send_message(message.chat.id, f"برای شروع، روی عدد **{a}** کلیک کن:", reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('cap_'))
 def handle_captcha(call):
     user_id = call.from_user.id
     ans = int(call.data.split('_')[1])
-    state = user_states.get(user_id)
     
-    if not state or state.get("step") != "captcha":
-        bot.answer_callback_query(call.id, "دوباره /start بزن.")
+    # گرفتن اطلاعات از دیتابیس (نه از حافظه موقت)
+    user = get_user(user_id)
+    
+    if user.get("captcha_passed"):
+        bot.answer_callback_query(call.id, "شما قبلا کپچا را رد کرده‌اید.")
         return
-        
-    if ans == state["correct"]:
+
+    if ans == user.get("captcha_code"):
         bot.answer_callback_query(call.id, "✅ درست بود!")
-        # اینجا به دیتابیس میگیم کپچا رد شده تا دیگه تکرار نشه
-        update_user(user_id, captcha_passed=True)
+        # ثبت در دیتابیس که کپچا رد شد
+        update_user(user_id, captcha_passed=True, captcha_code=None)
         
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -202,9 +210,7 @@ def handle_captcha(call):
         if not not_joined:
             update_user(user_id, is_verified=True)
             bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی.", reply_markup=main_keyboard())
-            if user_id in user_states: del user_states[user_id]
         else:
-            user_states[user_id]["step"] = "join_check"
             show_join_buttons(call.message.chat.id, not_joined)
     else:
         bot.answer_callback_query(call.id, "❌ اشتباهه! دوباره /start بزن.")
@@ -222,10 +228,7 @@ def check_join(call):
         except:
             pass
         bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.\nاز منو زیر انتخاب کن:", reply_markup=main_keyboard())
-        if user_id in user_states:
-            del user_states[user_id]
     else:
-        # اگر هنوز عضو نشده بود، بهش هشدار بده
         bot.answer_callback_query(call.id, f"❌ هنوز عضو اینا نشدی: {', '.join(not_joined)}", show_alert=True)
 
 # --- منوها ---
@@ -262,23 +265,26 @@ def handle_reward(message):
         return
 
     if deduct_points(user_id, cost):
-        user_states[user_id] = {"step": "await_username", "reward": message.text}
+        update_user(user_id, await_username_reward=message.text) # ذخیره در دیتابیس
         bot.reply_to(message,
             f"✅ {cost} امتیاز کسر شد.\n"
             f"لطفاً آیدی یوزرنیم خود را بفرستید (مثال: @username):")
     else:
         bot.reply_to(message, "خطا در کسر امتیاز.")
 
-@bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get("step") == "await_username")
+@bot.message_handler(func=lambda m: get_user(m.from_user.id).get("await_username_reward"))
 def receive_username(message):
     user_id = message.from_user.id
-    username = message.text
-    state = user_states[user_id]
+    user = get_user(user_id)
+    reward = user.get("await_username_reward")
+    
+    # پاک کردن استیت از دیتابیس
+    update_user(user_id, await_username_reward=None)
 
     text = (f"📥 درخواست جدید:\n"
             f"👤 کاربر: {message.from_user.first_name} ({user_id})\n"
-            f"🎁 جایزه: {state['reward']}\n"
-            f"🆔 یوزرنیم: {username}")
+            f"🎁 جایزه: {reward}\n"
+            f"🆔 یوزرنیم: {message.text}")
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton("✅ تایید", callback_data=f"approve_{user_id}"),
@@ -286,7 +292,6 @@ def receive_username(message):
     )
     bot.send_message(OWNER_ID, text, reply_markup=markup)
     bot.reply_to(message, "درخواست برای مالک ارسال شد. منتظر تایید باش.")
-    del user_states[user_id]
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith(('approve_', 'reject_')))
 def owner_action(call):
@@ -317,8 +322,10 @@ def admin_callbacks(call):
     
     action = call.data
     if action == "admin_add_channel":
-        user_states[OWNER_ID] = {"step": "admin_add_channel"}
         bot.send_message(OWNER_ID, "لطفاً آیدی چنل را با @ بفرستید (مثال: @MyChannel)\nتوجه: قبل از ارسال، ربات را ادمین چنل کنید.")
+        # ذخیره استیت در دیتابیس (چون دیتابیس داریم دیگه نیازی به دیکشنری نیست)
+        # برای سادگی، اینجا یه استیت ساده توی دیتابیس می‌سازیم
+        update_user(OWNER_ID, admin_step="add_channel")
         bot.answer_callback_query(call.id)
         
     elif action == "admin_del_channel":
@@ -333,7 +340,7 @@ def admin_callbacks(call):
         bot.send_message(OWNER_ID, "کدام چنل حذف شود؟", reply_markup=markup)
         bot.answer_callback_query(call.id)
 
-@bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get("step") == "admin_add_channel")
+@bot.message_handler(func=lambda m: get_user(m.from_user.id).get("admin_step") == "add_channel")
 def admin_add_channel_receive(message):
     if message.from_user.id != OWNER_ID:
         return
@@ -355,10 +362,9 @@ def admin_add_channel_receive(message):
         conn.close()
         
         bot.reply_to(message, f"✅ چنل {ch} با موفقیت اضافه شد.")
+        update_user(OWNER_ID, admin_step=None) # پاک کردن استیت
     except Exception as e:
         bot.reply_to(message, f"❌ خطا در بررسی چنل: {e}")
-    finally:
-        del user_states[OWNER_ID]
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('delch_'))
 def admin_delete_channel(call):
