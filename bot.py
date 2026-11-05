@@ -20,11 +20,13 @@ def get_db():
 def init_db():
     conn = get_db()
     cur = conn.cursor()
+    # ستون captcha_passed رو اضافه کردم که بفهمیم کاربر کپچا رو رد کرده یا نه
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
             points INT DEFAULT 0,
             is_verified BOOLEAN DEFAULT FALSE,
+            captcha_passed BOOLEAN DEFAULT FALSE,
             referrals INT DEFAULT 0
         );
     """)
@@ -131,7 +133,7 @@ def start(message):
     user_id = message.from_user.id
     user = get_user(user_id)
 
-    # رفرال (در صورت نیاز می‌تونی بعدا لاگینگش رو تغییر بدی)
+    # رفرال
     args = message.text.split()
     if len(args) > 1 and args[1].isdigit():
         referrer_id = int(args[1])
@@ -143,7 +145,7 @@ def start(message):
             except:
                 pass
 
-    # اگر کاربر از قبل تایید شده بود، مستقیم بره منو
+    # ۱. اگر کاربر قبلاً تایید شده بود
     if user.get("is_verified"):
         not_joined = check_channels(user_id)
         if not not_joined:
@@ -153,10 +155,17 @@ def start(message):
             show_join_buttons(message.chat.id, not_joined)
             return
 
-    # اگر کاربر قبلا کپچا رو رد کرده بود ولی عضو نشده بود (الان عضوش کنیم)
-    # این حالت با استیت هندل میشه
+    # ۲. اگر کپچا رو قبلاً رد کرده بود ولی هنوز عضو نشده بود
+    if user.get("captcha_passed"):
+        not_joined = check_channels(user_id)
+        if not not_joined:
+            update_user(user_id, is_verified=True)
+            bot.send_message(message.chat.id, "✅ تایید شد! خوش اومدی داداش.\nاز منو زیر انتخاب کن:", reply_markup=main_keyboard())
+        else:
+            show_join_buttons(message.chat.id, not_joined)
+        return
 
-    # کپچای ساده
+    # ۳. اگر کاربر کاملاً جدید بود -> کپچا
     a = random.randint(10, 20)
     b = a + random.randint(1, 5)
     options = [a, b]
@@ -181,6 +190,9 @@ def handle_captcha(call):
         
     if ans == state["correct"]:
         bot.answer_callback_query(call.id, "✅ درست بود!")
+        # اینجا به دیتابیس میگیم کپچا رد شده تا دیگه تکرار نشه
+        update_user(user_id, captcha_passed=True)
+        
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
@@ -188,7 +200,6 @@ def handle_captcha(call):
             
         not_joined = check_channels(user_id)
         if not not_joined:
-            # اگر همه چی اوکی بود
             update_user(user_id, is_verified=True)
             bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی.", reply_markup=main_keyboard())
             if user_id in user_states: del user_states[user_id]
@@ -198,30 +209,23 @@ def handle_captcha(call):
     else:
         bot.answer_callback_query(call.id, "❌ اشتباهه! دوباره /start بزن.")
 
-# --- چک عضویت (اصلاح شده) ---
+# --- چک عضویت ---
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join(call):
     user_id = call.from_user.id
     not_joined = check_channels(user_id)
     
     if not not_joined:
-        # ۱. تایید کاربر در دیتابیس
         update_user(user_id, is_verified=True)
-        
-        # ۲. پاک کردن پیام‌های قبلی (کپچا و عضویت)
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
             pass
-            
-        # ۳. ارسال کیبورد اصلی (این همون قسمتی بود که جا افتاده بود)
         bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.\nاز منو زیر انتخاب کن:", reply_markup=main_keyboard())
-        
-        # ۴. پاک کردن استیت
         if user_id in user_states:
             del user_states[user_id]
-            
     else:
+        # اگر هنوز عضو نشده بود، بهش هشدار بده
         bot.answer_callback_query(call.id, f"❌ هنوز عضو اینا نشدی: {', '.join(not_joined)}", show_alert=True)
 
 # --- منوها ---
