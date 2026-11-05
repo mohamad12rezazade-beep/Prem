@@ -35,7 +35,6 @@ def init_db():
     """)
     conn.commit()
     
-    # چنل‌های پیش‌فرض
     cur.execute("SELECT COUNT(*) FROM force_channels")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO force_channels VALUES ('@Poneix') ON CONFLICT DO NOTHING")
@@ -132,7 +131,7 @@ def start(message):
     user_id = message.from_user.id
     user = get_user(user_id)
 
-    # رفرال
+    # رفرال (در صورت نیاز می‌تونی بعدا لاگینگش رو تغییر بدی)
     args = message.text.split()
     if len(args) > 1 and args[1].isdigit():
         referrer_id = int(args[1])
@@ -144,6 +143,7 @@ def start(message):
             except:
                 pass
 
+    # اگر کاربر از قبل تایید شده بود، مستقیم بره منو
     if user.get("is_verified"):
         not_joined = check_channels(user_id)
         if not not_joined:
@@ -153,7 +153,10 @@ def start(message):
             show_join_buttons(message.chat.id, not_joined)
             return
 
-    # کپچای ساده (بدون عدد تصادفی پیچیده)
+    # اگر کاربر قبلا کپچا رو رد کرده بود ولی عضو نشده بود (الان عضوش کنیم)
+    # این حالت با استیت هندل میشه
+
+    # کپچای ساده
     a = random.randint(10, 20)
     b = a + random.randint(1, 5)
     options = [a, b]
@@ -173,7 +176,7 @@ def handle_captcha(call):
     state = user_states.get(user_id)
     
     if not state or state.get("step") != "captcha":
-        bot.answer_callback_query(call.id, "منقضی شده. /start بزن.")
+        bot.answer_callback_query(call.id, "دوباره /start بزن.")
         return
         
     if ans == state["correct"]:
@@ -185,31 +188,41 @@ def handle_captcha(call):
             
         not_joined = check_channels(user_id)
         if not not_joined:
+            # اگر همه چی اوکی بود
             update_user(user_id, is_verified=True)
             bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی.", reply_markup=main_keyboard())
-            del user_states[user_id]
+            if user_id in user_states: del user_states[user_id]
         else:
             user_states[user_id]["step"] = "join_check"
             show_join_buttons(call.message.chat.id, not_joined)
     else:
         bot.answer_callback_query(call.id, "❌ اشتباهه! دوباره /start بزن.")
 
-# --- چک عضویت ---
+# --- چک عضویت (اصلاح شده) ---
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join(call):
     user_id = call.from_user.id
     not_joined = check_channels(user_id)
+    
     if not not_joined:
+        # ۱. تایید کاربر در دیتابیس
         update_user(user_id, is_verified=True)
+        
+        # ۲. پاک کردن پیام‌های قبلی (کپچا و عضویت)
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
             pass
-        bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی.", reply_markup=main_keyboard())
+            
+        # ۳. ارسال کیبورد اصلی (این همون قسمتی بود که جا افتاده بود)
+        bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.\nاز منو زیر انتخاب کن:", reply_markup=main_keyboard())
+        
+        # ۴. پاک کردن استیت
         if user_id in user_states:
             del user_states[user_id]
+            
     else:
-        bot.answer_callback_query(call.id, f"❌ هنوز عضو نشدی: {', '.join(not_joined)}")
+        bot.answer_callback_query(call.id, f"❌ هنوز عضو اینا نشدی: {', '.join(not_joined)}", show_alert=True)
 
 # --- منوها ---
 @bot.message_handler(func=lambda m: m.text == "زیر مجموعه")
