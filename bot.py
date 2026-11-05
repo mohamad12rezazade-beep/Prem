@@ -1,7 +1,7 @@
 import os
-import re
 import logging
 import random
+import re
 
 from telegram import (
     Update,
@@ -9,7 +9,7 @@ from telegram import (
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
 )
-from telegram.constants import ChatMemberStatus
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -38,20 +38,36 @@ from database import (
 )
 
 
+# =========================
+# CONFIG
+# =========================
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+OWNER_ID = int(os.getenv("OWNER_ID", "8291994828"))
+
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN is missing")
+
+if not DATABASE_URL:
+    raise RuntimeError("❌ DATABASE_URL is missing")
+
+
+# =========================
+# LOGGING
+# =========================
+
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
 logger = logging.getLogger(__name__)
 
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "8291994828"))
-
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
-
+# =========================
+# PRODUCTS
+# =========================
 
 PRODUCTS = {
     "پریمیوم ۳ ماهه": 30,
@@ -61,15 +77,20 @@ PRODUCTS = {
 }
 
 
+# =========================
+# KEYBOARDS
+# =========================
+
 def main_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["زیر مجموعه"],
-            ["پریمیوم ۳ ماهه", "پریمیوم ۶ ماهه"],
+            ["پریمیوم ۳ ماهه"],
+            ["پریمیوم ۶ ماهه"],
             ["پریمیوم ۱۲ ماهه"],
             ["گیفت تدی"],
         ],
-        resize_keyboard=True
+        resize_keyboard=True,
     )
 
 
@@ -77,32 +98,38 @@ def admin_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["کاربران"],
-            ["➕ افزودن کانال", "➖ حذف کانال"],
+            ["➕ افزودن کانال"],
+            ["➖ حذف کانال"],
+            ["🔙 بازگشت"],
         ],
-        resize_keyboard=True
+        resize_keyboard=True,
     )
 
 
-def is_admin(user_id):
-    return user_id == OWNER_ID
-
-
-def referral_link(bot_username, user_id):
-    return f"https://t.me/{bot_username}?start=ref_{user_id}"
-
+# =========================
+# START
+# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    print(
+        f"✅ START RECEIVED | user={update.effective_user.id}",
+        flush=True,
+    )
+
     user = update.effective_user
 
     referred_by = None
 
     if context.args:
+
         arg = context.args[0]
 
         if arg.startswith("ref_"):
+
             try:
                 referred_by = int(arg.replace("ref_", ""))
-            except ValueError:
+            except Exception:
                 referred_by = None
 
     if referred_by == user.id:
@@ -114,403 +141,532 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         create_user(
             user.id,
             user.username,
-            referred_by
+            referred_by,
         )
     else:
         create_user(
             user.id,
             user.username,
-            None
+            None,
         )
 
-    user_db = get_user(user.id)
+    db_user = get_user(user.id)
 
-    if user_db["captcha_verified"]:
+    if db_user["captcha_verified"]:
         await show_membership(update, context)
         return
 
     await send_captcha(update, context)
 
 
+# =========================
+# CAPTCHA
+# =========================
+
 async def send_captcha(update, context):
+
     a = random.randint(1, 9)
     b = random.randint(1, 9)
+
     answer = a + b
 
     context.user_data["captcha_answer"] = answer
 
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                str(answer),
-                callback_data=f"captcha:{answer}"
-            ),
-            InlineKeyboardButton(
-                str(answer + 1),
-                callback_data=f"captcha:{answer + 1}"
-            ),
-            InlineKeyboardButton(
-                str(answer + 2),
-                callback_data=f"captcha:{answer + 2}"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                str(answer - 1),
-                callback_data=f"captcha:{answer - 1}"
-            ),
-            InlineKeyboardButton(
-                str(answer + 3),
-                callback_data=f"captcha:{answer + 3}"
-            ),
-        ]
+    wrong1 = answer + 1
+    wrong2 = answer + 2
+    wrong3 = max(0, answer - 1)
+
+    numbers = [
+        answer,
+        wrong1,
+        wrong2,
+        wrong3,
     ]
 
-    text = (
-        "🔐 کپچا\n\n"
-        f"حاصل عبارت زیر چند است؟\n\n"
-        f"{a} + {b} = ?\n\n"
-        "جواب صحیح را انتخاب کنید."
-    )
+    random.shuffle(numbers)
+
+    keyboard = []
+
+    row = []
+
+    for number in numbers:
+
+        row.append(
+            InlineKeyboardButton(
+                str(number),
+                callback_data=f"captcha:{number}",
+            )
+        )
+
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
 
     markup = InlineKeyboardMarkup(keyboard)
 
-    if update.callback_query:
-        await update.callback_query.message.reply_text(
-            text,
-            reply_markup=markup
-        )
-    else:
-        await update.message.reply_text(
-            text,
-            reply_markup=markup
-        )
-
-
-async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    selected = int(query.data.split(":")[1])
-    correct = context.user_data.get("captcha_answer")
-
-    if selected != correct:
-        await query.answer("❌ پاسخ اشتباه است", show_alert=True)
-        return
-
-    set_captcha_verified(query.from_user.id)
-
-    context.user_data.pop("captcha_answer", None)
-
-    await query.edit_message_text(
-        "✅ کپچا با موفقیت انجام شد."
+    text = (
+        "🔐 کپچا\n\n"
+        f"{a} + {b} = ؟\n\n"
+        "جواب صحیح را انتخاب کن:"
     )
 
-    await show_membership(update, context)
+    await update.message.reply_text(
+        text,
+        reply_markup=markup,
+    )
 
+
+async def captcha_callback(update, context):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    selected = int(
+        query.data.split(":")[1]
+    )
+
+    correct = context.user_data.get(
+        "captcha_answer"
+    )
+
+    if selected != correct:
+
+        await query.answer(
+            "❌ جواب اشتباهه",
+            show_alert=True,
+        )
+
+        return
+
+    user_id = query.from_user.id
+
+    set_captcha_verified(user_id)
+
+    context.user_data.pop(
+        "captcha_answer",
+        None,
+    )
+
+    referrer_id = reward_referrer(user_id)
+
+    if referrer_id:
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=referrer_id,
+                text=(
+                    "🎉 زیرمجموعه جدید!\n\n"
+                    "⭐ ۱ امتیاز به حساب شما اضافه شد."
+                ),
+            )
+
+        except Exception as e:
+
+            logger.warning(
+                "Referral notification failed: %s",
+                e,
+            )
+
+    await query.edit_message_text(
+        "✅ کپچا درست بود."
+    )
+
+    await show_membership(
+        update,
+        context,
+    )
+
+
+# =========================
+# MEMBERSHIP
+# =========================
 
 async def show_membership(update, context):
+
     channels = get_forced_channels()
 
     keyboard = []
 
     for channel in channels:
+
         username = channel["username"]
 
-        if username.startswith("@"):
-            url = f"https://t.me/{username[1:]}"
-        else:
-            url = username
-
-        keyboard.append([
-            InlineKeyboardButton(
-                f"📢 {channel['title'] or username}",
-                url=url
-            )
-        ])
-
-    keyboard.append([
-        InlineKeyboardButton(
-            "✅ بررسی عضویت",
-            callback_data="check_membership"
+        link = (
+            f"https://t.me/{username.lstrip('@')}"
         )
-    ])
 
-    text = (
-        "📢 برای استفاده از ربات، ابتدا در کانال‌های زیر عضو شوید:\n\n"
-        "بعد از عضویت روی «بررسی عضویت» بزنید."
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"📢 {username}",
+                    url=link,
+                )
+            ]
+        )
+
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "✅ بررسی عضویت",
+                callback_data="check_membership",
+            )
+        ]
     )
 
-    markup = InlineKeyboardMarkup(keyboard)
+    markup = InlineKeyboardMarkup(
+        keyboard
+    )
+
+    text = (
+        "📢 برای ورود به ربات، "
+        "ابتدا در کانال‌های زیر عضو شو.\n\n"
+        "بعد از عضویت روی "
+        "«بررسی عضویت» بزن."
+    )
 
     if update.callback_query:
+
         await update.callback_query.message.reply_text(
             text,
-            reply_markup=markup
+            reply_markup=markup,
         )
+
     else:
+
         await update.message.reply_text(
             text,
-            reply_markup=markup
+            reply_markup=markup,
         )
 
 
-async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def check_membership(update, context):
+
     query = update.callback_query
+
     await query.answer()
 
     user_id = query.from_user.id
+
     channels = get_forced_channels()
 
     not_joined = []
 
     for channel in channels:
+
+        username = channel["username"]
+
         try:
+
             member = await context.bot.get_chat_member(
-                channel["username"],
-                user_id
+                chat_id=username,
+                user_id=user_id,
             )
 
-            if member.status in (
-                ChatMemberStatus.LEFT,
-                ChatMemberStatus.KICKED,
+            status = member.status
+
+            if status in (
+                "left",
+                "kicked",
             ):
-                not_joined.append(channel["username"])
+                not_joined.append(username)
 
         except Exception as e:
+
             logger.error(
-                "Membership check failed for %s: %s",
-                channel["username"],
-                e
+                "Membership check error for %s: %s",
+                username,
+                e,
             )
-            not_joined.append(channel["username"])
+
+            not_joined.append(username)
 
     if not_joined:
+
         await query.answer(
-            "❌ هنوز در همه کانال‌ها عضو نیستی.",
-            show_alert=True
+            "❌ هنوز عضو همه کانال‌ها نشدی.",
+            show_alert=True,
         )
+
         return
 
     set_membership_verified(user_id)
 
-    # امتیاز معرف فقط بعد از کپچا + عضویت داده می‌شود.
-    referrer_id = reward_referrer(user_id)
-
-    if referrer_id:
-        try:
-            await context.bot.send_message(
-                chat_id=referrer_id,
-                text=(
-                    "🎉 یک زیرمجموعه جدید داری!\n\n"
-                    "✅ ۱ امتیاز به حساب شما اضافه شد."
-                )
-            )
-        except Exception:
-            pass
-
     await query.edit_message_text(
-        "✅ عضویت شما تأیید شد.\n\n"
-        "به منوی اصلی خوش آمدید."
+        "✅ عضویت تأیید شد."
     )
 
     await query.message.reply_text(
-        "یکی از گزینه‌های زیر را انتخاب کنید:",
-        reply_markup=main_keyboard()
+        "🎉 خوش اومدی!\n\n"
+        "یکی از گزینه‌های زیر رو انتخاب کن:",
+        reply_markup=main_keyboard(),
     )
 
 
-async def show_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+# =========================
+# REFERRAL
+# =========================
 
-    try:
-        me = await context.bot.get_me()
-        link = referral_link(me.username, user.id)
-    except Exception:
-        link = "خطا در ساخت لینک"
+async def referral_menu(update, context):
 
-    db_user = get_user(user.id)
+    user_id = update.effective_user.id
 
-    points = db_user["points"] if db_user else 0
-    count = db_user["referral_count"] if db_user else 0
+    user = get_user(user_id)
 
-    text = (
-        "👥 بخش زیرمجموعه\n\n"
-        f"👤 تعداد زیرمجموعه موفق: {count}\n"
-        f"⭐ امتیاز شما: {points}\n\n"
-        "🔗 لینک اختصاصی شما:\n"
+    points = get_points(user_id)
+
+    bot = await context.bot.get_me()
+
+    link = (
+        f"https://t.me/{bot.username}?start=ref_{user_id}"
+    )
+
+    count = user["referral_count"]
+
+    await update.message.reply_text(
+        "👥 زیر مجموعه\n\n"
+        f"⭐ امتیاز: {points}\n"
+        f"👤 دعوت موفق: {count}\n\n"
+        "🔗 لینک دعوت شما:\n"
         f"{link}\n\n"
-        "هر زیرمجموعه‌ای که کپچا را انجام دهد و عضو کانال‌های اجباری شود، "
-        "۱ امتیاز برای شما ثبت می‌کند."
+        "هر دعوت موفق = ۱ امتیاز"
     )
 
-    await update.message.reply_text(text)
 
+# =========================
+# PRODUCTS
+# =========================
 
-async def product_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+async def product_menu(update, context):
 
-    if text not in PRODUCTS:
+    product = update.message.text
+
+    if product not in PRODUCTS:
         return
 
     user_id = update.effective_user.id
-    required = PRODUCTS[text]
-    points = get_points(user_id)
 
-    if points < required:
+    required = PRODUCTS[product]
+
+    current = get_points(user_id)
+
+    if current < required:
+
         await update.message.reply_text(
-            f"❌ امتیاز کافی ندارید.\n\n"
-            f"💰 امتیاز فعلی: {points}\n"
+            "❌ امتیاز کافی نیست.\n\n"
+            f"⭐ امتیاز فعلی: {current}\n"
             f"⭐ امتیاز مورد نیاز: {required}\n\n"
-            "برای دریافت امتیاز بیشتر از بخش «زیر مجموعه» استفاده کنید."
+            "برای گرفتن امتیاز بیشتر "
+            "از بخش «زیر مجموعه» استفاده کن."
         )
+
         return
 
-    context.user_data["pending_product"] = text
+    context.user_data[
+        "pending_product"
+    ] = product
 
     await update.message.reply_text(
-        f"🛒 محصول: {text}\n"
+        f"📦 محصول: {product}\n"
         f"⭐ قیمت: {required} امتیاز\n\n"
-        "حالا آیدی تلگرام خود را ارسال کنید.\n"
+        "آیدی تلگرام خودت را ارسال کن.\n\n"
         "مثال:\n"
         "@username"
     )
 
 
-async def receive_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "pending_product" not in context.user_data:
+# =========================
+# ORDER
+# =========================
+
+async def receive_username(update, context):
+
+    product = context.user_data.get(
+        "pending_product"
+    )
+
+    if not product:
         return False
 
     username = update.message.text.strip()
 
-    if not re.fullmatch(r"@[A-Za-z0-9_]{5,32}", username):
+    if not re.fullmatch(
+        r"@[A-Za-z0-9_]{5,32}",
+        username,
+    ):
+
         await update.message.reply_text(
-            "❌ آیدی تلگرام نامعتبر است.\n\n"
-            "مثال صحیح:\n"
+            "❌ آیدی تلگرام اشتباهه.\n\n"
+            "مثال:\n"
             "@username"
         )
+
         return True
 
-    product = context.user_data["pending_product"]
     points = PRODUCTS[product]
 
     order_id = create_order(
-        update.effective_user.id,
-        product,
-        points,
-        username
+        user_id=update.effective_user.id,
+        product=product,
+        points=points,
+        telegram_username=username,
     )
 
     if not order_id:
-        context.user_data.pop("pending_product", None)
+
+        context.user_data.pop(
+            "pending_product",
+            None,
+        )
 
         await update.message.reply_text(
-            "❌ امتیاز شما دیگر کافی نیست."
+            "❌ ثبت سفارش انجام نشد."
         )
+
         return True
 
-    context.user_data.pop("pending_product", None)
+    context.user_data.pop(
+        "pending_product",
+        None,
+    )
 
     await update.message.reply_text(
-        "✅ سفارش شما ثبت شد.\n\n"
-        f"🛒 محصول: {product}\n"
+        "✅ سفارش ثبت شد.\n\n"
+        f"📦 محصول: {product}\n"
         f"⭐ هزینه: {points} امتیاز\n"
-        f"📦 شماره سفارش: #{order_id}\n\n"
-        "⏳ سفارش برای بررسی ادمین ارسال شد."
+        f"🆔 سفارش: #{order_id}\n\n"
+        "⏳ منتظر بررسی ادمین باش."
+    )
+
+    admin_text = (
+        "📥 سفارش جدید\n\n"
+        f"🆔 سفارش: #{order_id}\n"
+        f"👤 User ID: {update.effective_user.id}\n"
+        f"📛 Username: "
+        f"@{update.effective_user.username or 'ندارد'}\n"
+        f"📦 محصول: {product}\n"
+        f"⭐ هزینه: {points}\n"
+        f"🎯 آیدی: {username}"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ تأیید",
+                    callback_data=f"approve:{order_id}",
+                ),
+                InlineKeyboardButton(
+                    "❌ رد",
+                    callback_data=f"reject:{order_id}",
+                ),
+            ]
+        ]
     )
 
     await context.bot.send_message(
         chat_id=OWNER_ID,
-        text=(
-            "🔔 سفارش جدید\n\n"
-            f"📦 سفارش: #{order_id}\n"
-            f"👤 کاربر: {update.effective_user.id}\n"
-            f"🆔 آیدی: @{update.effective_user.username or 'ندارد'}\n"
-            f"📨 دریافت‌کننده: {username}\n"
-            f"🛒 محصول: {product}\n"
-            f"⭐ امتیاز: {points}"
-        ),
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "✅ تأیید",
-                    callback_data=f"approve:{order_id}"
-                ),
-                InlineKeyboardButton(
-                    "❌ رد",
-                    callback_data=f"reject:{order_id}"
-                ),
-            ]
-        ])
+        text=admin_text,
+        reply_markup=keyboard,
     )
 
     return True
 
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+# =========================
+# ADMIN
+# =========================
+
+async def admin_command(update, context):
+
+    if update.effective_user.id != OWNER_ID:
+
+        await update.message.reply_text(
+            "❌ دسترسی ندارید."
+        )
+
         return
 
     await update.message.reply_text(
         "⚙️ پنل مدیریت",
-        reply_markup=admin_keyboard()
+        reply_markup=admin_keyboard(),
     )
 
 
-async def users_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+async def admin_users(update, context):
+
+    if update.effective_user.id != OWNER_ID:
         return
 
     users, points, pending = get_user_stats()
 
     await update.message.reply_text(
-        "👥 آمار کاربران\n\n"
-        f"👤 تعداد کاربران: {users}\n"
-        f"⭐ مجموع امتیازها: {points}\n"
+        "📊 آمار\n\n"
+        f"👤 کاربران: {users}\n"
+        f"⭐ مجموع امتیاز: {points}\n"
         f"📦 سفارش‌های در انتظار: {pending}"
     )
 
 
-async def add_channel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+async def admin_add_channel(update, context):
+
+    if update.effective_user.id != OWNER_ID:
         return
 
-    context.user_data["admin_action"] = "add_channel"
+    context.user_data[
+        "admin_action"
+    ] = "add_channel"
 
     await update.message.reply_text(
-        "📢 یوزرنیم کانال را ارسال کنید.\n\n"
+        "➕ آیدی کانال را بفرست.\n\n"
         "مثال:\n"
-        "@MyChannel\n\n"
-        "⚠️ ربات باید در کانال ادمین باشد."
+        "@MyChannel"
     )
 
 
-async def remove_channel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+async def admin_remove_channel(update, context):
+
+    if update.effective_user.id != OWNER_ID:
         return
 
     channels = get_forced_channels()
 
-    text = "📢 کانال‌های ثبت‌شده:\n\n"
+    text = "📢 کانال‌ها:\n\n"
 
     for channel in channels:
-        protected = "🔒" if channel["protected"] else "🗑"
-        text += f"{protected} {channel['username']}\n"
 
-    text += (
-        "\nبرای حذف یک کانال، یوزرنیم آن را ارسال کنید."
+        if channel["protected"]:
+            status = "🔒 محافظت‌شده"
+        else:
+            status = "قابل حذف"
+
+        text += (
+            f"{channel['username']} - {status}\n"
+        )
+
+    text += "\nآیدی کانالی که می‌خواهی حذف کنی را بفرست."
+
+    context.user_data[
+        "admin_action"
+    ] = "remove_channel"
+
+    await update.message.reply_text(
+        text
     )
 
-    context.user_data["admin_action"] = "remove_channel"
 
-    await update.message.reply_text(text)
+async def admin_text_handler(update, context):
 
-
-async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if update.effective_user.id != OWNER_ID:
         return False
 
-    action = context.user_data.get("admin_action")
+    action = context.user_data.get(
+        "admin_action"
+    )
 
     if not action:
         return False
@@ -520,69 +676,91 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "add_channel":
 
         if not value.startswith("@"):
+
             await update.message.reply_text(
-                "❌ یوزرنیم باید با @ شروع شود."
+                "❌ مثال صحیح: @MyChannel"
             )
+
             return True
 
         try:
+
             me = await context.bot.get_me()
 
             member = await context.bot.get_chat_member(
-                value,
-                me.id
+                chat_id=value,
+                user_id=me.id,
             )
 
             if member.status not in (
-                ChatMemberStatus.ADMINISTRATOR,
-                ChatMemberStatus.OWNER,
+                "administrator",
+                "creator",
             ):
+
                 await update.message.reply_text(
-                    "❌ ربات در این کانال ادمین نیست."
+                    "❌ ربات ادمین این کانال نیست."
                 )
+
                 return True
 
-            chat = await context.bot.get_chat(value)
+            chat = await context.bot.get_chat(
+                value
+            )
 
             add_forced_channel(
                 value,
-                chat.title
+                chat.title,
             )
 
-            context.user_data.pop("admin_action", None)
+            context.user_data.pop(
+                "admin_action",
+                None,
+            )
 
             await update.message.reply_text(
-                f"✅ کانال {value} با موفقیت اضافه شد.",
-                reply_markup=admin_keyboard()
+                "✅ کانال اضافه شد.",
+                reply_markup=admin_keyboard(),
             )
 
         except Exception as e:
-            logger.error("Add channel error: %s", e)
+
+            logger.error(
+                "ADD CHANNEL ERROR: %s",
+                e,
+            )
 
             await update.message.reply_text(
-                "❌ کانال پیدا نشد یا ربات در آن ادمین نیست."
+                "❌ نتوانستم کانال را بررسی کنم.\n"
+                "آیدی کانال یا دسترسی ادمین ربات را بررسی کن."
             )
 
         return True
 
     if action == "remove_channel":
 
-        if value.lower() in (
+        protected = {
             "@poneix",
-            "@bet_1xzx"
-        ):
+            "@bet_1xzx",
+        }
+
+        if value.lower() in protected:
+
             await update.message.reply_text(
-                "❌ این دو کانال اصلی قابل حذف نیستند."
+                "❌ این کانال اصلی قابل حذف نیست."
             )
+
             return True
 
         remove_forced_channel(value)
 
-        context.user_data.pop("admin_action", None)
+        context.user_data.pop(
+            "admin_action",
+            None,
+        )
 
         await update.message.reply_text(
-            f"✅ کانال {value} حذف شد.",
-            reply_markup=admin_keyboard()
+            "✅ کانال حذف شد.",
+            reply_markup=admin_keyboard(),
         )
 
         return True
@@ -590,40 +768,53 @@ async def admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return False
 
 
-async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# ORDER ACTION
+# =========================
+
+async def order_action(update, context):
+
     query = update.callback_query
+
     await query.answer()
 
     if query.from_user.id != OWNER_ID:
+
         await query.answer(
-            "دسترسی ندارید.",
-            show_alert=True
+            "❌ دسترسی ندارید.",
+            show_alert=True,
         )
+
         return
 
-    action, order_id_str = query.data.split(":")
-    order_id = int(order_id_str)
+    action, order_id_text = query.data.split(":")
+
+    order_id = int(order_id_text)
 
     order = get_order(order_id)
 
     if not order:
+
         await query.edit_message_text(
             "❌ سفارش پیدا نشد."
         )
+
         return
 
     if order["status"] != "pending":
+
         await query.answer(
             "این سفارش قبلاً بررسی شده.",
-            show_alert=True
+            show_alert=True,
         )
+
         return
 
     if action == "approve":
 
         update_order_status(
             order_id,
-            "approved"
+            "approved",
         )
 
         await query.edit_message_text(
@@ -631,91 +822,179 @@ async def order_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         try:
+
             await context.bot.send_message(
                 chat_id=order["user_id"],
                 text=(
                     "🎉 سفارش شما تأیید شد.\n\n"
-                    f"📦 سفارش: #{order_id}\n"
-                    f"🛒 محصول: {order['product']}\n\n"
-                    "✅ پرداخت/تحویل شما توسط ادمین تأیید شد."
-                )
+                    f"📦 محصول: {order['product']}\n"
+                    f"🆔 سفارش: #{order_id}\n\n"
+                    "✅ تحویل/پرداخت توسط ادمین تأیید شد."
+                ),
             )
+
         except Exception as e:
-            logger.error("Send approval message failed: %s", e)
+
+            logger.error(
+                "APPROVE MESSAGE ERROR: %s",
+                e,
+            )
 
     elif action == "reject":
 
-        refunded = refund_order(order_id)
+        refunded = refund_order(
+            order_id
+        )
 
-        if refunded:
-            await query.edit_message_text(
-                f"❌ سفارش #{order_id} رد شد.\n"
-                "⭐ امتیازها به کاربر برگشت داده شد."
+        if not refunded:
+            await query.answer(
+                "این سفارش قبلاً بررسی شده.",
+                show_alert=True,
+            )
+            return
+
+        await query.edit_message_text(
+            f"❌ سفارش #{order_id} رد شد.\n"
+            "⭐ امتیازها برگشت داده شد."
+        )
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=order["user_id"],
+                text=(
+                    "❌ سفارش شما رد شد.\n\n"
+                    f"📦 محصول: {order['product']}\n"
+                    f"🆔 سفارش: #{order_id}\n\n"
+                    f"⭐ {order['points']} امتیاز "
+                    "به حساب شما برگشت داده شد."
+                ),
             )
 
-            try:
-                await context.bot.send_message(
-                    chat_id=order["user_id"],
-                    text=(
-                        "❌ سفارش شما رد شد.\n\n"
-                        f"📦 سفارش: #{order_id}\n"
-                        f"🛒 محصول: {order['product']}\n\n"
-                        "⭐ امتیازهای شما به حسابتان برگشت داده شد."
-                    )
-                )
-            except Exception as e:
-                logger.error("Send rejection message failed: %s", e)
+        except Exception as e:
+
+            logger.error(
+                "REJECT MESSAGE ERROR: %s",
+                e,
+            )
 
 
-async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# TEXT ROUTER
+# =========================
+
+async def text_router(update, context):
+
     text = update.message.text
 
-    if is_admin(update.effective_user.id):
+    if update.effective_user.id == OWNER_ID:
 
         if text == "کاربران":
-            await users_info(update, context)
+            await admin_users(
+                update,
+                context,
+            )
             return
 
         if text == "➕ افزودن کانال":
-            await add_channel_start(update, context)
+            await admin_add_channel(
+                update,
+                context,
+            )
             return
 
         if text == "➖ حذف کانال":
-            await remove_channel_start(update, context)
+            await admin_remove_channel(
+                update,
+                context,
+            )
             return
 
-        if await admin_text(update, context):
+        if text == "🔙 بازگشت":
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "🔙 برگشتی.",
+                reply_markup=main_keyboard(),
+            )
+
+            return
+
+        if await admin_text_handler(
+            update,
+            context,
+        ):
             return
 
     if text == "زیر مجموعه":
-        await show_referral(update, context)
+
+        await referral_menu(
+            update,
+            context,
+        )
+
         return
 
     if text in PRODUCTS:
-        await product_menu(update, context)
+
+        await product_menu(
+            update,
+            context,
+        )
+
         return
 
-    if await receive_username(update, context):
+    if await receive_username(
+        update,
+        context,
+    ):
         return
 
-    if text == "/admin":
-        await admin_panel(update, context)
-        return
-
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(
-        "Unhandled exception:",
-        exc_info=context.error
+    await update.message.reply_text(
+        "یکی از گزینه‌های منو را انتخاب کن.",
+        reply_markup=main_keyboard(),
     )
 
 
+# =========================
+# ERROR
+# =========================
+
+async def error_handler(update, context):
+
+    logger.error(
+        "BOT ERROR",
+        exc_info=context.error,
+    )
+
+
+# =========================
+# MAIN
+# =========================
+
 def main():
+
+    print("=" * 40, flush=True)
+    print("STARTING BOT...", flush=True)
+
+    print(
+        "DATABASE_URL: OK",
+        flush=True,
+    )
+
+    print(
+        "BOT_TOKEN: OK",
+        flush=True,
+    )
+
+    # تست اتصال دیتابیس
     init_db()
 
-    print("DATABASE OK")
-    print("BOT TOKEN OK")
-    print("STARTING POLLING...")
+    print(
+        "DATABASE CONNECTION: OK",
+        flush=True,
+    )
 
     application = (
         Application
@@ -725,46 +1004,60 @@ def main():
     )
 
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start,
+        )
     )
 
     application.add_handler(
-        CommandHandler("admin", admin_panel)
+        CommandHandler(
+            "admin",
+            admin_command,
+        )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             captcha_callback,
-            pattern=r"^captcha:"
+            pattern=r"^captcha:",
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             check_membership,
-            pattern=r"^check_membership$"
+            pattern=r"^check_membership$",
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             order_action,
-            pattern=r"^(approve|reject):"
+            pattern=r"^(approve|reject):",
         )
     )
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            text_router
+            text_router,
         )
     )
 
-    application.add_error_handler(error_handler)
+    application.add_error_handler(
+        error_handler
+    )
 
-    print("BOT IS RUNNING...")
+    print(
+        "POLLING STARTING...",
+        flush=True,
+    )
 
-    application.run_polling()
+    # اگر آپدیت‌های قدیمی مانده باشند، ردشان می‌کند.
+    application.run_polling(
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
