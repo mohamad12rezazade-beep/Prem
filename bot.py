@@ -1,6 +1,6 @@
 import os
-import logging
 import random
+import logging
 import re
 
 from telegram import (
@@ -38,36 +38,28 @@ from database import (
 )
 
 
-# =========================
-# CONFIG
-# =========================
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
-OWNER_ID = int(os.getenv("OWNER_ID", "8291994828"))
+OWNER_ID = int(
+    os.getenv("OWNER_ID", "8291994828")
+)
 
 if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN is missing")
+    raise RuntimeError(
+        "BOT_TOKEN is not set"
+    )
 
-if not DATABASE_URL:
-    raise RuntimeError("❌ DATABASE_URL is missing")
-
-
-# =========================
-# LOGGING
-# =========================
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(message)s"
+    ),
 )
 
 logger = logging.getLogger(__name__)
 
-
-# =========================
-# PRODUCTS
-# =========================
 
 PRODUCTS = {
     "پریمیوم ۳ ماهه": 30,
@@ -77,11 +69,8 @@ PRODUCTS = {
 }
 
 
-# =========================
-# KEYBOARDS
-# =========================
-
 def main_keyboard():
+
     return ReplyKeyboardMarkup(
         [
             ["زیر مجموعه"],
@@ -95,6 +84,7 @@ def main_keyboard():
 
 
 def admin_keyboard():
+
     return ReplyKeyboardMarkup(
         [
             ["کاربران"],
@@ -106,16 +96,11 @@ def admin_keyboard():
     )
 
 
-# =========================
-# START
-# =========================
+def is_admin(user_id):
+    return user_id == OWNER_ID
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    print(
-        f"✅ START RECEIVED | user={update.effective_user.id}",
-        flush=True,
-    )
+async def start(update, context):
 
     user = update.effective_user
 
@@ -128,40 +113,65 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if arg.startswith("ref_"):
 
             try:
-                referred_by = int(arg.replace("ref_", ""))
-            except Exception:
+                referred_by = int(
+                    arg[4:]
+                )
+            except ValueError:
                 referred_by = None
 
     if referred_by == user.id:
         referred_by = None
 
-    existing = get_user(user.id)
+    old_user = get_user(user.id)
 
-    if not existing:
+    if not old_user:
+
         create_user(
             user.id,
             user.username,
             referred_by,
         )
+
     else:
+
         create_user(
             user.id,
             user.username,
-            None,
         )
 
     db_user = get_user(user.id)
 
-    if db_user["captcha_verified"]:
-        await show_membership(update, context)
+    if (
+        db_user
+        and db_user["captcha_verified"]
+        and db_user["membership_verified"]
+    ):
+
+        await update.message.reply_text(
+            "👋 خوش اومدی!\n\n"
+            "از منوی زیر استفاده کن:",
+            reply_markup=main_keyboard(),
+        )
+
         return
 
-    await send_captcha(update, context)
+    if (
+        db_user
+        and db_user["captcha_verified"]
+    ):
 
+        await show_membership(
+            update,
+            context,
+        )
 
-# =========================
-# CAPTCHA
-# =========================
+        return
+
+    await send_captcha(
+        update,
+        context,
+    )
+
 
 async def send_captcha(update, context):
 
@@ -170,52 +180,56 @@ async def send_captcha(update, context):
 
     answer = a + b
 
-    context.user_data["captcha_answer"] = answer
+    context.user_data[
+        "captcha_answer"
+    ] = answer
 
-    wrong1 = answer + 1
-    wrong2 = answer + 2
-    wrong3 = max(0, answer - 1)
-
-    numbers = [
+    choices = {
         answer,
-        wrong1,
-        wrong2,
-        wrong3,
+        answer + 1,
+        answer + 2,
+        answer - 1,
+    }
+
+    choices = [
+        x for x in choices
+        if x >= 0
     ]
 
-    random.shuffle(numbers)
+    random.shuffle(choices)
 
     keyboard = []
 
     row = []
 
-    for number in numbers:
+    for number in choices:
 
         row.append(
             InlineKeyboardButton(
                 str(number),
-                callback_data=f"captcha:{number}",
+                callback_data=(
+                    f"captcha:{number}"
+                ),
             )
         )
 
         if len(row) == 2:
+
             keyboard.append(row)
             row = []
 
     if row:
         keyboard.append(row)
 
-    markup = InlineKeyboardMarkup(keyboard)
-
-    text = (
-        "🔐 کپچا\n\n"
-        f"{a} + {b} = ؟\n\n"
-        "جواب صحیح را انتخاب کن:"
-    )
-
     await update.message.reply_text(
-        text,
-        reply_markup=markup,
+        f"🔐 کپچا\n\n"
+        f"{a} + {b} = ؟\n\n"
+        "جواب درست را انتخاب کن:",
+        reply_markup=(
+            InlineKeyboardMarkup(
+                keyboard
+            )
+        ),
     )
 
 
@@ -229,14 +243,14 @@ async def captcha_callback(update, context):
         query.data.split(":")[1]
     )
 
-    correct = context.user_data.get(
+    answer = context.user_data.get(
         "captcha_answer"
     )
 
-    if selected != correct:
+    if selected != answer:
 
         await query.answer(
-            "❌ جواب اشتباهه",
+            "❌ جواب اشتباه است.",
             show_alert=True,
         )
 
@@ -244,14 +258,18 @@ async def captcha_callback(update, context):
 
     user_id = query.from_user.id
 
-    set_captcha_verified(user_id)
+    set_captcha_verified(
+        user_id
+    )
 
     context.user_data.pop(
         "captcha_answer",
         None,
     )
 
-    referrer_id = reward_referrer(user_id)
+    referrer_id = reward_referrer(
+        user_id
+    )
 
     if referrer_id:
 
@@ -261,16 +279,12 @@ async def captcha_callback(update, context):
                 chat_id=referrer_id,
                 text=(
                     "🎉 زیرمجموعه جدید!\n\n"
-                    "⭐ ۱ امتیاز به حساب شما اضافه شد."
+                    "➕ ۱ امتیاز دریافت کردی."
                 ),
             )
 
-        except Exception as e:
-
-            logger.warning(
-                "Referral notification failed: %s",
-                e,
-            )
+        except Exception:
+            pass
 
     await query.edit_message_text(
         "✅ کپچا درست بود."
@@ -282,10 +296,6 @@ async def captcha_callback(update, context):
     )
 
 
-# =========================
-# MEMBERSHIP
-# =========================
-
 async def show_membership(update, context):
 
     channels = get_forced_channels()
@@ -296,15 +306,14 @@ async def show_membership(update, context):
 
         username = channel["username"]
 
-        link = (
-            f"https://t.me/{username.lstrip('@')}"
-        )
-
         keyboard.append(
             [
                 InlineKeyboardButton(
                     f"📢 {username}",
-                    url=link,
+                    url=(
+                        "https://t.me/"
+                        + username.lstrip("@")
+                    ),
                 )
             ]
         )
@@ -313,7 +322,9 @@ async def show_membership(update, context):
         [
             InlineKeyboardButton(
                 "✅ بررسی عضویت",
-                callback_data="check_membership",
+                callback_data=(
+                    "check_membership"
+                ),
             )
         ]
     )
@@ -323,8 +334,8 @@ async def show_membership(update, context):
     )
 
     text = (
-        "📢 برای ورود به ربات، "
-        "ابتدا در کانال‌های زیر عضو شو.\n\n"
+        "📢 برای استفاده از ربات "
+        "باید در کانال‌های زیر عضو شوی:\n\n"
         "بعد از عضویت روی "
         "«بررسی عضویت» بزن."
     )
@@ -358,58 +369,56 @@ async def check_membership(update, context):
 
     for channel in channels:
 
-        username = channel["username"]
-
         try:
 
             member = await context.bot.get_chat_member(
-                chat_id=username,
+                chat_id=channel["username"],
                 user_id=user_id,
             )
 
-            status = member.status
-
-            if status in (
+            if member.status in (
                 "left",
                 "kicked",
             ):
-                not_joined.append(username)
+                not_joined.append(
+                    channel["username"]
+                )
 
         except Exception as e:
 
             logger.error(
-                "Membership check error for %s: %s",
-                username,
+                "Membership error %s: %s",
+                channel["username"],
                 e,
             )
 
-            not_joined.append(username)
+            not_joined.append(
+                channel["username"]
+            )
 
     if not_joined:
 
         await query.answer(
-            "❌ هنوز عضو همه کانال‌ها نشدی.",
+            "❌ هنوز عضو همه کانال‌ها نیستی.",
             show_alert=True,
         )
 
         return
 
-    set_membership_verified(user_id)
+    set_membership_verified(
+        user_id
+    )
 
     await query.edit_message_text(
         "✅ عضویت تأیید شد."
     )
 
     await query.message.reply_text(
-        "🎉 خوش اومدی!\n\n"
-        "یکی از گزینه‌های زیر رو انتخاب کن:",
+        "🎉 ورود کامل شد.\n\n"
+        "از منوی زیر استفاده کن:",
         reply_markup=main_keyboard(),
     )
 
-
-# =========================
-# REFERRAL
-# =========================
 
 async def referral_menu(update, context):
 
@@ -417,29 +426,26 @@ async def referral_menu(update, context):
 
     user = get_user(user_id)
 
-    points = get_points(user_id)
+    if not user:
+        return
 
     bot = await context.bot.get_me()
 
     link = (
-        f"https://t.me/{bot.username}?start=ref_{user_id}"
+        f"https://t.me/{bot.username}"
+        f"?start=ref_{user_id}"
     )
-
-    count = user["referral_count"]
 
     await update.message.reply_text(
         "👥 زیر مجموعه\n\n"
-        f"⭐ امتیاز: {points}\n"
-        f"👤 دعوت موفق: {count}\n\n"
+        f"⭐ امتیاز: {user['points']}\n"
+        f"👤 دعوت موفق: "
+        f"{user['referral_count']}\n\n"
         "🔗 لینک دعوت شما:\n"
         f"{link}\n\n"
         "هر دعوت موفق = ۱ امتیاز"
     )
 
-
-# =========================
-# PRODUCTS
-# =========================
 
 async def product_menu(update, context):
 
@@ -459,8 +465,8 @@ async def product_menu(update, context):
         await update.message.reply_text(
             "❌ امتیاز کافی نیست.\n\n"
             f"⭐ امتیاز فعلی: {current}\n"
-            f"⭐ امتیاز مورد نیاز: {required}\n\n"
-            "برای گرفتن امتیاز بیشتر "
+            f"⭐ مورد نیاز: {required}\n\n"
+            "برای گرفتن امتیاز بیشتر، "
             "از بخش «زیر مجموعه» استفاده کن."
         )
 
@@ -472,16 +478,12 @@ async def product_menu(update, context):
 
     await update.message.reply_text(
         f"📦 محصول: {product}\n"
-        f"⭐ قیمت: {required} امتیاز\n\n"
-        "آیدی تلگرام خودت را ارسال کن.\n\n"
+        f"⭐ هزینه: {required} امتیاز\n\n"
+        "آیدی تلگرام خودت را بفرست.\n\n"
         "مثال:\n"
         "@username"
     )
 
-
-# =========================
-# ORDER
-# =========================
 
 async def receive_username(update, context):
 
@@ -500,7 +502,7 @@ async def receive_username(update, context):
     ):
 
         await update.message.reply_text(
-            "❌ آیدی تلگرام اشتباهه.\n\n"
+            "❌ آیدی تلگرام معتبر نیست.\n\n"
             "مثال:\n"
             "@username"
         )
@@ -524,7 +526,7 @@ async def receive_username(update, context):
         )
 
         await update.message.reply_text(
-            "❌ ثبت سفارش انجام نشد."
+            "❌ امتیاز کافی نیست."
         )
 
         return True
@@ -539,18 +541,20 @@ async def receive_username(update, context):
         f"📦 محصول: {product}\n"
         f"⭐ هزینه: {points} امتیاز\n"
         f"🆔 سفارش: #{order_id}\n\n"
-        "⏳ منتظر بررسی ادمین باش."
+        "⏳ برای ادمین ارسال شد."
     )
 
-    admin_text = (
+    text = (
         "📥 سفارش جدید\n\n"
         f"🆔 سفارش: #{order_id}\n"
-        f"👤 User ID: {update.effective_user.id}\n"
+        f"👤 User ID: "
+        f"{update.effective_user.id}\n"
         f"📛 Username: "
         f"@{update.effective_user.username or 'ندارد'}\n"
         f"📦 محصول: {product}\n"
         f"⭐ هزینه: {points}\n"
-        f"🎯 آیدی: {username}"
+        f"🎯 آیدی دریافت‌کننده: "
+        f"{username}"
     )
 
     keyboard = InlineKeyboardMarkup(
@@ -558,37 +562,46 @@ async def receive_username(update, context):
             [
                 InlineKeyboardButton(
                     "✅ تأیید",
-                    callback_data=f"approve:{order_id}",
+                    callback_data=(
+                        f"approve:{order_id}"
+                    ),
                 ),
                 InlineKeyboardButton(
                     "❌ رد",
-                    callback_data=f"reject:{order_id}",
+                    callback_data=(
+                        f"reject:{order_id}"
+                    ),
                 ),
             ]
         ]
     )
 
-    await context.bot.send_message(
-        chat_id=OWNER_ID,
-        text=admin_text,
-        reply_markup=keyboard,
-    )
+    try:
+
+        await context.bot.send_message(
+            chat_id=OWNER_ID,
+            text=text,
+            reply_markup=keyboard,
+        )
+
+    except Exception as e:
+
+        logger.error(
+            "Sending order to owner failed: %s",
+            e,
+        )
 
     return True
 
 
-# =========================
-# ADMIN
-# =========================
-
 async def admin_command(update, context):
 
-    if update.effective_user.id != OWNER_ID:
-
+    if not is_admin(
+        update.effective_user.id
+    ):
         await update.message.reply_text(
             "❌ دسترسی ندارید."
         )
-
         return
 
     await update.message.reply_text(
@@ -599,22 +612,28 @@ async def admin_command(update, context):
 
 async def admin_users(update, context):
 
-    if update.effective_user.id != OWNER_ID:
+    if not is_admin(
+        update.effective_user.id
+    ):
         return
 
-    users, points, pending = get_user_stats()
+    users, points, pending = (
+        get_user_stats()
+    )
 
     await update.message.reply_text(
-        "📊 آمار\n\n"
+        "📊 آمار کاربران\n\n"
         f"👤 کاربران: {users}\n"
         f"⭐ مجموع امتیاز: {points}\n"
-        f"📦 سفارش‌های در انتظار: {pending}"
+        f"📦 سفارش در انتظار: {pending}"
     )
 
 
 async def admin_add_channel(update, context):
 
-    if update.effective_user.id != OWNER_ID:
+    if not is_admin(
+        update.effective_user.id
+    ):
         return
 
     context.user_data[
@@ -624,31 +643,38 @@ async def admin_add_channel(update, context):
     await update.message.reply_text(
         "➕ آیدی کانال را بفرست.\n\n"
         "مثال:\n"
-        "@MyChannel"
+        "@MyChannel\n\n"
+        "ربات باید در کانال ادمین باشد."
     )
 
 
 async def admin_remove_channel(update, context):
 
-    if update.effective_user.id != OWNER_ID:
+    if not is_admin(
+        update.effective_user.id
+    ):
         return
 
     channels = get_forced_channels()
 
-    text = "📢 کانال‌ها:\n\n"
+    text = "📢 کانال‌های ثبت‌شده:\n\n"
 
     for channel in channels:
 
-        if channel["protected"]:
-            status = "🔒 محافظت‌شده"
-        else:
-            status = "قابل حذف"
-
-        text += (
-            f"{channel['username']} - {status}\n"
+        status = (
+            "🔒 محافظت‌شده"
+            if channel["protected"]
+            else "قابل حذف"
         )
 
-    text += "\nآیدی کانالی که می‌خواهی حذف کنی را بفرست."
+        text += (
+            f"{channel['username']} "
+            f"- {status}\n"
+        )
+
+    text += (
+        "\nآیدی کانال موردنظر را بفرست."
+    )
 
     context.user_data[
         "admin_action"
@@ -659,9 +685,14 @@ async def admin_remove_channel(update, context):
     )
 
 
-async def admin_text_handler(update, context):
+async def admin_text_handler(
+    update,
+    context
+):
 
-    if update.effective_user.id != OWNER_ID:
+    if not is_admin(
+        update.effective_user.id
+    ):
         return False
 
     action = context.user_data.get(
@@ -685,11 +716,13 @@ async def admin_text_handler(update, context):
 
         try:
 
-            me = await context.bot.get_me()
+            bot = await context.bot.get_me()
 
-            member = await context.bot.get_chat_member(
-                chat_id=value,
-                user_id=me.id,
+            member = (
+                await context.bot.get_chat_member(
+                    chat_id=value,
+                    user_id=bot.id,
+                )
             )
 
             if member.status not in (
@@ -698,13 +731,15 @@ async def admin_text_handler(update, context):
             ):
 
                 await update.message.reply_text(
-                    "❌ ربات ادمین این کانال نیست."
+                    "❌ ربات در کانال ادمین نیست."
                 )
 
                 return True
 
-            chat = await context.bot.get_chat(
-                value
+            chat = (
+                await context.bot.get_chat(
+                    value
+                )
             )
 
             add_forced_channel(
@@ -725,13 +760,13 @@ async def admin_text_handler(update, context):
         except Exception as e:
 
             logger.error(
-                "ADD CHANNEL ERROR: %s",
+                "Add channel error: %s",
                 e,
             )
 
             await update.message.reply_text(
-                "❌ نتوانستم کانال را بررسی کنم.\n"
-                "آیدی کانال یا دسترسی ادمین ربات را بررسی کن."
+                "❌ کانال پیدا نشد یا "
+                "ربات ادمین نیست."
             )
 
         return True
@@ -746,12 +781,14 @@ async def admin_text_handler(update, context):
         if value.lower() in protected:
 
             await update.message.reply_text(
-                "❌ این کانال اصلی قابل حذف نیست."
+                "❌ این کانال قابل حذف نیست."
             )
 
             return True
 
-        remove_forced_channel(value)
+        remove_forced_channel(
+            value
+        )
 
         context.user_data.pop(
             "admin_action",
@@ -768,28 +805,22 @@ async def admin_text_handler(update, context):
     return False
 
 
-# =========================
-# ORDER ACTION
-# =========================
-
 async def order_action(update, context):
 
     query = update.callback_query
 
     await query.answer()
 
-    if query.from_user.id != OWNER_ID:
-
-        await query.answer(
-            "❌ دسترسی ندارید.",
-            show_alert=True,
-        )
-
+    if not is_admin(
+        query.from_user.id
+    ):
         return
 
-    action, order_id_text = query.data.split(":")
+    action, order_id = (
+        query.data.split(":")
+    )
 
-    order_id = int(order_id_text)
+    order_id = int(order_id)
 
     order = get_order(order_id)
 
@@ -827,18 +858,15 @@ async def order_action(update, context):
                 chat_id=order["user_id"],
                 text=(
                     "🎉 سفارش شما تأیید شد.\n\n"
-                    f"📦 محصول: {order['product']}\n"
+                    f"📦 محصول: "
+                    f"{order['product']}\n"
                     f"🆔 سفارش: #{order_id}\n\n"
-                    "✅ تحویل/پرداخت توسط ادمین تأیید شد."
+                    "✅ تحویل/پرداخت انجام شد."
                 ),
             )
 
-        except Exception as e:
-
-            logger.error(
-                "APPROVE MESSAGE ERROR: %s",
-                e,
-            )
+        except Exception:
+            pass
 
     elif action == "reject":
 
@@ -847,10 +875,6 @@ async def order_action(update, context):
         )
 
         if not refunded:
-            await query.answer(
-                "این سفارش قبلاً بررسی شده.",
-                show_alert=True,
-            )
             return
 
         await query.edit_message_text(
@@ -864,49 +888,44 @@ async def order_action(update, context):
                 chat_id=order["user_id"],
                 text=(
                     "❌ سفارش شما رد شد.\n\n"
-                    f"📦 محصول: {order['product']}\n"
+                    f"📦 محصول: "
+                    f"{order['product']}\n"
                     f"🆔 سفارش: #{order_id}\n\n"
-                    f"⭐ {order['points']} امتیاز "
-                    "به حساب شما برگشت داده شد."
+                    f"⭐ {order['points']} "
+                    "امتیاز برگشت داده شد."
                 ),
             )
 
-        except Exception as e:
+        except Exception:
+            pass
 
-            logger.error(
-                "REJECT MESSAGE ERROR: %s",
-                e,
-            )
-
-
-# =========================
-# TEXT ROUTER
-# =========================
 
 async def text_router(update, context):
 
     text = update.message.text
 
-    if update.effective_user.id == OWNER_ID:
+    if is_admin(
+        update.effective_user.id
+    ):
 
         if text == "کاربران":
             await admin_users(
                 update,
-                context,
+                context
             )
             return
 
         if text == "➕ افزودن کانال":
             await admin_add_channel(
                 update,
-                context,
+                context
             )
             return
 
         if text == "➖ حذف کانال":
             await admin_remove_channel(
                 update,
-                context,
+                context
             )
             return
 
@@ -923,7 +942,7 @@ async def text_router(update, context):
 
         if await admin_text_handler(
             update,
-            context,
+            context
         ):
             return
 
@@ -931,7 +950,7 @@ async def text_router(update, context):
 
         await referral_menu(
             update,
-            context,
+            context
         )
 
         return
@@ -940,14 +959,14 @@ async def text_router(update, context):
 
         await product_menu(
             update,
-            context,
+            context
         )
 
         return
 
     if await receive_username(
         update,
-        context,
+        context
     ):
         return
 
@@ -957,105 +976,92 @@ async def text_router(update, context):
     )
 
 
-# =========================
-# ERROR
-# =========================
-
 async def error_handler(update, context):
 
     logger.error(
-        "BOT ERROR",
-        exc_info=context.error,
+        "Unhandled error:",
+        exc_info=context.error
     )
 
-
-# =========================
-# MAIN
-# =========================
 
 def main():
 
-    print("=" * 40, flush=True)
-    print("STARTING BOT...", flush=True)
-
     print(
-        "DATABASE_URL: OK",
-        flush=True,
+        "🚀 BOT STARTING...",
+        flush=True
     )
 
-    print(
-        "BOT_TOKEN: OK",
-        flush=True,
-    )
-
-    # تست اتصال دیتابیس
     init_db()
 
     print(
-        "DATABASE CONNECTION: OK",
-        flush=True,
+        "✅ DATABASE CONNECTED",
+        flush=True
     )
 
-    application = (
+    app = (
         Application
         .builder()
         .token(BOT_TOKEN)
         .build()
     )
 
-    application.add_handler(
+    app.add_handler(
         CommandHandler(
             "start",
-            start,
+            start
         )
     )
 
-    application.add_handler(
+    app.add_handler(
         CommandHandler(
             "admin",
-            admin_command,
+            admin_command
         )
     )
 
-    application.add_handler(
+    app.add_handler(
         CallbackQueryHandler(
             captcha_callback,
-            pattern=r"^captcha:",
+            pattern=r"^captcha:"
         )
     )
 
-    application.add_handler(
+    app.add_handler(
         CallbackQueryHandler(
             check_membership,
-            pattern=r"^check_membership$",
+            pattern=(
+                r"^check_membership$"
+            )
         )
     )
 
-    application.add_handler(
+    app.add_handler(
         CallbackQueryHandler(
             order_action,
-            pattern=r"^(approve|reject):",
+            pattern=(
+                r"^(approve|reject):"
+            )
         )
     )
 
-    application.add_handler(
+    app.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            text_router,
+            filters.TEXT
+            & ~filters.COMMAND,
+            text_router
         )
     )
 
-    application.add_error_handler(
+    app.add_error_handler(
         error_handler
     )
 
     print(
-        "POLLING STARTING...",
-        flush=True,
+        "🤖 BOT IS RUNNING...",
+        flush=True
     )
 
-    # اگر آپدیت‌های قدیمی مانده باشند، ردشان می‌کند.
-    application.run_polling(
+    app.run_polling(
         drop_pending_updates=True
     )
 
