@@ -2,6 +2,7 @@ import os
 import psycopg
 from psycopg.rows import dict_row
 
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
@@ -18,6 +19,7 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         with conn.cursor() as cur:
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -27,8 +29,16 @@ def init_db():
                     referral_count INTEGER NOT NULL DEFAULT 0,
                     captcha_verified BOOLEAN NOT NULL DEFAULT FALSE,
                     membership_verified BOOLEAN NOT NULL DEFAULT FALSE,
+                    referral_rewarded BOOLEAN NOT NULL DEFAULT FALSE,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
+            """)
+
+            # برای دیتابیس‌های قبلی
+            cur.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS referral_rewarded BOOLEAN
+                NOT NULL DEFAULT FALSE
             """)
 
             cur.execute("""
@@ -47,19 +57,21 @@ def init_db():
                     user_id BIGINT NOT NULL,
                     product TEXT NOT NULL,
                     points INTEGER NOT NULL,
-                    telegram_username TEXT,
+                    telegram_username TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
 
+            # کانال‌های اجباری اولیه
             cur.execute("""
                 INSERT INTO forced_channels
-                (username, title, protected)
+                    (username, title, protected)
                 VALUES
-                ('@Poneix', 'Poneix', TRUE),
-                ('@BET_1XZX', 'BET_1XZX', TRUE)
-                ON CONFLICT (username) DO NOTHING
+                    ('@Poneix', 'Poneix', TRUE),
+                    ('@BET_1XZX', 'BET_1XZX', TRUE)
+                ON CONFLICT (username) DO UPDATE
+                SET protected = TRUE
             """)
 
         conn.commit()
@@ -69,9 +81,12 @@ def create_user(user_id, username=None, referred_by=None):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO users (user_id, username, referred_by)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (user_id) DO NOTHING
+                INSERT INTO users
+                    (user_id, username, referred_by)
+                VALUES
+                    (%s, %s, %s)
+                ON CONFLICT (user_id)
+                DO UPDATE SET username = EXCLUDED.username
             """, (user_id, username, referred_by))
 
         conn.commit()
@@ -80,28 +95,12 @@ def create_user(user_id, username=None, referred_by=None):
 def get_user(user_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM users WHERE user_id = %s",
-                (user_id,)
-            )
-            return cur.fetchone()
-
-
-def add_points(user_id, amount):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
             cur.execute("""
-                UPDATE users
-                SET points = points + %s
+                SELECT *
+                FROM users
                 WHERE user_id = %s
-            """, (amount, user_id))
-
-        conn.commit()
-
-
-def get_points(user_id):
-    user = get_user(user_id)
-    return user["points"] if user else 0
+            """, (user_id,))
+            return cur.fetchone()
 
 
 def set_captcha_verified(user_id):
@@ -112,7 +111,6 @@ def set_captcha_verified(user_id):
                 SET captcha_verified = TRUE
                 WHERE user_id = %s
             """, (user_id,))
-
         conn.commit()
 
 
@@ -124,8 +122,63 @@ def set_membership_verified(user_id):
                 SET membership_verified = TRUE
                 WHERE user_id = %s
             """, (user_id,))
+        conn.commit()
+
+
+def reward_referrer(user_id):
+    """
+    بعد از تکمیل CAPTCHA و عضویت، فقط یک بار به معرف امتیاز می‌دهد.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT referred_by, referral_rewarded
+                FROM users
+                WHERE user_id = %s
+                FOR UPDATE
+            """, (user_id,))
+
+            user = cur.fetchone()
+
+            if not user:
+                return None
+
+            if user["referral_rewarded"]:
+                return None
+
+            referrer_id = user["referred_by"]
+
+            if not referrer_id or referrer_id == user_id:
+                cur.execute("""
+                    UPDATE users
+                    SET referral_rewarded = TRUE
+                    WHERE user_id = %s
+                """, (user_id,))
+                conn.commit()
+                return None
+
+            cur.execute("""
+                UPDATE users
+                SET points = points + 1,
+                    referral_count = referral_count + 1
+                WHERE user_id = %s
+            """, (referrer_id,))
+
+            cur.execute("""
+                UPDATE users
+                SET referral_rewarded = TRUE
+                WHERE user_id = %s
+            """, (user_id,))
 
         conn.commit()
+
+    return referrer_id
+
+
+def get_points(user_id):
+    user = get_user(user_id)
+    return user["points"] if user else 0
 
 
 def get_forced_channels():
@@ -143,11 +196,12 @@ def add_forced_channel(username, title=None):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO forced_channels (username, title)
-                VALUES (%s, %s)
+                INSERT INTO forced_channels
+                    (username, title, protected)
+                VALUES
+                    (%s, %s, FALSE)
                 ON CONFLICT (username) DO NOTHING
             """, (username, title))
-
         conn.commit()
 
 
@@ -159,7 +213,6 @@ def remove_forced_channel(username):
                 WHERE username = %s
                 AND protected = FALSE
             """, (username,))
-
         conn.commit()
 
 
@@ -205,18 +258,6 @@ def create_order(user_id, product, points, telegram_username):
     return order_id
 
 
-def update_order_status(order_id, status):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE orders
-                SET status = %s
-                WHERE id = %s
-            """, (status, order_id))
-
-        conn.commit()
-
-
 def get_order(order_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -226,3 +267,76 @@ def get_order(order_id):
                 WHERE id = %s
             """, (order_id,))
             return cur.fetchone()
+
+
+def update_order_status(order_id, status):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE orders
+                SET status = %s
+                WHERE id = %s
+            """, (status, order_id))
+        conn.commit()
+
+
+def refund_order(order_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT user_id, points, status
+                FROM orders
+                WHERE id = %s
+                FOR UPDATE
+            """, (order_id,))
+
+            order = cur.fetchone()
+
+            if not order:
+                return False
+
+            if order["status"] != "pending":
+                return False
+
+            cur.execute("""
+                UPDATE users
+                SET points = points + %s
+                WHERE user_id = %s
+            """, (
+                order["points"],
+                order["user_id"]
+            ))
+
+            cur.execute("""
+                UPDATE orders
+                SET status = 'rejected'
+                WHERE id = %s
+            """, (order_id,))
+
+        conn.commit()
+
+    return True
+
+
+def get_user_stats():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("SELECT COUNT(*) AS count FROM users")
+            users = cur.fetchone()["count"]
+
+            cur.execute("""
+                SELECT COALESCE(SUM(points), 0) AS points
+                FROM users
+            """)
+            points = cur.fetchone()["points"]
+
+            cur.execute("""
+                SELECT COUNT(*) AS count
+                FROM orders
+                WHERE status = 'pending'
+            """)
+            pending = cur.fetchone()["count"]
+
+    return users, points, pending
