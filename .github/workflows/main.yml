@@ -1,19 +1,25 @@
 name: Run Telegram Bot
 
 on:
-  workflow_dispatch:   # فقط دستی اجرا میشه
+  workflow_dispatch:   # فقط دستی اجرا میشه (هیچ کرون‌جابی نداره)
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # حداکثر ۶ ساعت روشن می‌مونه (سقف رایگان گیت‌هاب)
+    timeout-minutes: 360   # حداکثر ۶ ساعت (سقف گیت‌هاب)
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
       - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
