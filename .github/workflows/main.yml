@@ -1,15 +1,15 @@
 name: Run Telegram Bot
 
 on:
-  workflow_dispatch:   # فقط دستی اجرا میشه (هیچ کرون‌جابی نداره)
+  workflow_dispatch: # این خط باعث میشه دکمه Run Workflow فعال بشه
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # حداکثر ۶ ساعت (سقف گیت‌هاب)
+    timeout-minutes: 360 
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python
