@@ -93,10 +93,9 @@ def is_admin(user_id):
     return user_id == OWNER_ID
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update, context):
 
     user = update.effective_user
-
     referred_by = None
 
     if context.args:
@@ -104,7 +103,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         arg = context.args[0]
 
         if arg.startswith("ref_"):
-
             try:
                 referred_by = int(arg[4:])
             except ValueError:
@@ -116,15 +114,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     old_user = get_user(user.id)
 
     if not old_user:
-
         create_user(
             user.id,
             user.username,
             referred_by,
         )
-
     else:
-
         create_user(
             user.id,
             user.username,
@@ -137,31 +132,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         and db_user["captcha_verified"]
         and db_user["membership_verified"]
     ):
-
         await update.message.reply_text(
             "👋 خوش اومدی!\n\n"
             "از منوی زیر استفاده کن:",
             reply_markup=main_keyboard(),
         )
-
         return
 
-    if (
-        db_user
-        and db_user["captcha_verified"]
-    ):
-
-        await show_membership(
-            update,
-            context,
-        )
-
+    if db_user and db_user["captcha_verified"]:
+        await show_membership(update, context)
         return
 
-    await send_captcha(
-        update,
-        context,
-    )
+    await send_captcha(update, context)
 
 
 async def send_captcha(update, context):
@@ -173,12 +155,12 @@ async def send_captcha(update, context):
 
     context.user_data["captcha_answer"] = answer
 
-    choices = {
+    choices = list({
         answer,
         answer + 1,
         answer + 2,
         answer - 1,
-    }
+    })
 
     choices = [
         x for x in choices
@@ -302,6 +284,10 @@ async def show_membership(update, context):
         ]
     )
 
+    markup = InlineKeyboardMarkup(
+        keyboard
+    )
+
     text = (
         "📢 برای استفاده از ربات "
         "باید در کانال‌های زیر عضو شوی:\n\n"
@@ -309,19 +295,12 @@ async def show_membership(update, context):
         "«بررسی عضویت» بزن."
     )
 
-    markup = InlineKeyboardMarkup(
-        keyboard
-    )
-
     if update.callback_query:
-
         await update.callback_query.message.reply_text(
             text,
             reply_markup=markup,
         )
-
     else:
-
         await update.message.reply_text(
             text,
             reply_markup=markup,
@@ -337,8 +316,6 @@ async def check_membership(update, context):
 
     channels = get_forced_channels()
 
-    not_joined = []
-
     for channel in channels:
 
         try:
@@ -352,29 +329,28 @@ async def check_membership(update, context):
                 "left",
                 "kicked",
             ):
-                not_joined.append(
-                    channel["username"]
+
+                await query.answer(
+                    "❌ هنوز عضو همه کانال‌ها نیستی.",
+                    show_alert=True,
                 )
+
+                return
 
         except Exception as e:
 
             logger.error(
-                "Membership error %s: %s",
-                channel["username"],
+                "Membership error: %s",
                 e,
             )
 
-            not_joined.append(
-                channel["username"]
+            await query.answer(
+                "❌ بررسی عضویت انجام نشد. "
+                "مطمئن شو ربات در کانال ادمین است.",
+                show_alert=True,
             )
 
-    if not_joined:
-
-        await query.answer(
-            "❌ هنوز عضو همه کانال‌ها نیستی.",
-            show_alert=True,
-        )
-        return
+            return
 
     set_membership_verified(user_id)
 
@@ -392,7 +368,6 @@ async def check_membership(update, context):
 async def referral_menu(update, context):
 
     user_id = update.effective_user.id
-
     user = get_user(user_id)
 
     if not user:
@@ -439,9 +414,7 @@ async def product_menu(update, context):
 
         return
 
-    context.user_data[
-        "pending_product"
-    ] = product
+    context.user_data["pending_product"] = product
 
     await update.message.reply_text(
         f"📦 محصول: {product}\n"
@@ -479,10 +452,10 @@ async def receive_username(update, context):
     points = PRODUCTS[product]
 
     order_id = create_order(
-        user_id=update.effective_user.id,
-        product=product,
-        points=points,
-        telegram_username=username,
+        update.effective_user.id,
+        product,
+        points,
+        username,
     )
 
     if not order_id:
@@ -511,7 +484,7 @@ async def receive_username(update, context):
         "⏳ برای ادمین ارسال شد."
     )
 
-    text = (
+    admin_text = (
         "📥 سفارش جدید\n\n"
         f"🆔 سفارش: #{order_id}\n"
         f"👤 User ID: {update.effective_user.id}\n"
@@ -538,17 +511,14 @@ async def receive_username(update, context):
     )
 
     try:
-
         await context.bot.send_message(
-            chat_id=OWNER_ID,
-            text=text,
+            OWNER_ID,
+            admin_text,
             reply_markup=keyboard,
         )
-
     except Exception as e:
-
         logger.error(
-            "Sending order to owner failed: %s",
+            "Owner notification failed: %s",
             e,
         )
 
@@ -558,11 +528,9 @@ async def receive_username(update, context):
 async def admin_command(update, context):
 
     if not is_admin(update.effective_user.id):
-
         await update.message.reply_text(
             "❌ دسترسی ندارید."
         )
-
         return
 
     await update.message.reply_text(
@@ -624,9 +592,7 @@ async def admin_remove_channel(update, context):
 
     text += "\nآیدی کانال موردنظر را بفرست."
 
-    context.user_data[
-        "admin_action"
-    ] = "remove_channel"
+    context.user_data["admin_action"] = "remove_channel"
 
     await update.message.reply_text(text)
 
@@ -660,8 +626,8 @@ async def admin_text_handler(update, context):
             bot = await context.bot.get_me()
 
             member = await context.bot.get_chat_member(
-                chat_id=value,
-                user_id=bot.id,
+                value,
+                bot.id,
             )
 
             if member.status not in (
@@ -675,9 +641,7 @@ async def admin_text_handler(update, context):
 
                 return True
 
-            chat = await context.bot.get_chat(
-                value
-            )
+            chat = await context.bot.get_chat(value)
 
             add_forced_channel(
                 value,
@@ -781,25 +745,19 @@ async def order_action(update, context):
         )
 
         try:
-
             await context.bot.send_message(
-                chat_id=order["user_id"],
-                text=(
-                    "🎉 سفارش شما تأیید شد.\n\n"
-                    f"📦 محصول: {order['product']}\n"
-                    f"🆔 سفارش: #{order_id}\n\n"
-                    "✅ تحویل/پرداخت انجام شد."
-                ),
+                order["user_id"],
+                "🎉 سفارش شما تأیید شد.\n\n"
+                f"📦 محصول: {order['product']}\n"
+                f"🆔 سفارش: #{order_id}\n\n"
+                "✅ تحویل/پرداخت انجام شد.",
             )
-
         except Exception:
             pass
 
     elif action == "reject":
 
-        refunded = refund_order(order_id)
-
-        if not refunded:
+        if not refund_order(order_id):
             return
 
         await query.edit_message_text(
@@ -808,18 +766,14 @@ async def order_action(update, context):
         )
 
         try:
-
             await context.bot.send_message(
-                chat_id=order["user_id"],
-                text=(
-                    "❌ سفارش شما رد شد.\n\n"
-                    f"📦 محصول: {order['product']}\n"
-                    f"🆔 سفارش: #{order_id}\n\n"
-                    f"⭐ {order['points']} "
-                    "امتیاز برگشت داده شد."
-                ),
+                order["user_id"],
+                "❌ سفارش شما رد شد.\n\n"
+                f"📦 محصول: {order['product']}\n"
+                f"🆔 سفارش: #{order_id}\n\n"
+                f"⭐ {order['points']} "
+                "امتیاز برگشت داده شد.",
             )
-
         except Exception:
             pass
 
@@ -860,21 +814,11 @@ async def text_router(update, context):
             return
 
     if text == "زیر مجموعه":
-
-        await referral_menu(
-            update,
-            context,
-        )
-
+        await referral_menu(update, context)
         return
 
     if text in PRODUCTS:
-
-        await product_menu(
-            update,
-            context,
-        )
-
+        await product_menu(update, context)
         return
 
     if await receive_username(
@@ -900,11 +844,17 @@ async def error_handler(update, context):
 
 def main():
 
-    print("🚀 BOT STARTING...", flush=True)
+    print(
+        "🚀 BOT STARTING...",
+        flush=True,
+    )
 
     init_db()
 
-    print("✅ DATABASE CONNECTED", flush=True)
+    print(
+        "✅ DATABASE CONNECTED",
+        flush=True,
+    )
 
     application = (
         Application
@@ -956,7 +906,7 @@ def main():
     )
 
     application.add_error_handler(
-        error_handler
+        error_handler,
     )
 
     print(
@@ -965,7 +915,7 @@ def main():
     )
 
     application.run_polling(
-        drop_pending_updates=True,
+        drop_pending_updates=False,
     )
 
 
