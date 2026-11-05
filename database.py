@@ -2,6 +2,7 @@ import os
 import psycopg
 from psycopg.rows import dict_row
 
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
@@ -11,7 +12,7 @@ if not DATABASE_URL:
 def get_conn():
     return psycopg.connect(
         DATABASE_URL,
-        row_factory=dict_row
+        row_factory=dict_row,
     )
 
 
@@ -35,8 +36,8 @@ def init_db():
 
             cur.execute("""
                 ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS referral_rewarded BOOLEAN
-                NOT NULL DEFAULT FALSE
+                ADD COLUMN IF NOT EXISTS referral_rewarded
+                BOOLEAN NOT NULL DEFAULT FALSE
             """)
 
             cur.execute("""
@@ -78,32 +79,31 @@ def create_user(user_id, username=None, referred_by=None):
     with get_conn() as conn:
         with conn.cursor() as cur:
 
-            if referred_by:
+            cur.execute("""
+                SELECT user_id, referred_by
+                FROM users
+                WHERE user_id = %s
+            """, (user_id,))
+
+            existing = cur.fetchone()
+
+            if existing:
+                cur.execute("""
+                    UPDATE users
+                    SET username = %s
+                    WHERE user_id = %s
+                """, (username, user_id))
+
+            else:
                 cur.execute("""
                     INSERT INTO users
                         (user_id, username, referred_by)
                     VALUES
                         (%s, %s, %s)
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET
-                        username = EXCLUDED.username
                 """, (
                     user_id,
                     username,
-                    referred_by
-                ))
-            else:
-                cur.execute("""
-                    INSERT INTO users
-                        (user_id, username)
-                    VALUES
-                        (%s, %s)
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET
-                        username = EXCLUDED.username
-                """, (
-                    user_id,
-                    username
+                    referred_by,
                 ))
 
         conn.commit()
@@ -149,7 +149,6 @@ def set_membership_verified(user_id):
 
 
 def reward_referrer(user_id):
-
     with get_conn() as conn:
         with conn.cursor() as cur:
 
@@ -235,7 +234,7 @@ def add_forced_channel(username, title=None):
                 DO NOTHING
             """, (
                 username,
-                title
+                title,
             ))
 
         conn.commit()
@@ -258,7 +257,7 @@ def create_order(
     user_id,
     product,
     points,
-    telegram_username
+    telegram_username,
 ):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -284,7 +283,7 @@ def create_order(
                 WHERE user_id = %s
             """, (
                 points,
-                user_id
+                user_id,
             ))
 
             cur.execute("""
@@ -302,7 +301,7 @@ def create_order(
                 user_id,
                 product,
                 points,
-                telegram_username
+                telegram_username,
             ))
 
             order_id = cur.fetchone()["id"]
@@ -335,14 +334,13 @@ def update_order_status(order_id, status):
                 WHERE id = %s
             """, (
                 status,
-                order_id
+                order_id,
             ))
 
         conn.commit()
 
 
 def refund_order(order_id):
-
     with get_conn() as conn:
         with conn.cursor() as cur:
 
@@ -370,7 +368,7 @@ def refund_order(order_id):
                 WHERE user_id = %s
             """, (
                 order["points"],
-                order["user_id"]
+                order["user_id"],
             ))
 
             cur.execute("""
@@ -385,7 +383,6 @@ def refund_order(order_id):
 
 
 def get_user_stats():
-
     with get_conn() as conn:
         with conn.cursor() as cur:
 
@@ -393,14 +390,12 @@ def get_user_stats():
                 SELECT COUNT(*) AS count
                 FROM users
             """)
-
             users = cur.fetchone()["count"]
 
             cur.execute("""
                 SELECT COALESCE(SUM(points), 0) AS points
                 FROM users
             """)
-
             points = cur.fetchone()["points"]
 
             cur.execute("""
@@ -408,7 +403,6 @@ def get_user_stats():
                 FROM orders
                 WHERE status = 'pending'
             """)
-
             pending = cur.fetchone()["count"]
 
     return users, points, pending
