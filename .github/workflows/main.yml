@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  bot:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,9 +21,41 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Test Telegram Token
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          import urllib.request
+          import json
+
+          token = os.environ["BOT_TOKEN"]
+
+          url = f"https://api.telegram.org/bot{token}/getMe"
+
+          try:
+              with urllib.request.urlopen(url, timeout=20) as r:
+                  data = json.loads(r.read().decode())
+
+              print("TELEGRAM RESPONSE:", data)
+
+              if not data.get("ok"):
+                  raise SystemExit("BOT TOKEN IS INVALID")
+
+              print("BOT NAME:", data["result"]["username"])
+              print("BOT ID:", data["result"]["id"])
+              print("TOKEN TEST: OK")
+
+          except Exception as e:
+              print("TOKEN TEST FAILED:", repr(e))
+              raise
+          PY
+
       - name: Run Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           OWNER_ID: ${{ secrets.OWNER_ID }}
-        run: python bot.py
+        run: |
+          python bot.py
