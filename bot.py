@@ -9,6 +9,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 OWNER_ID = 8291994828
 
+# چنل‌های پیش‌فرض (چنل جدید اینجا اضافه شد)
+DEFAULT_CHANNELS = ["@Poneix", "@BET_1XZX", "@TABADL_MOD"]
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # --- اتصال به دیتابیس ---
@@ -29,10 +32,6 @@ def init_db():
                 admin_step VARCHAR(50) DEFAULT NULL
             );
         """)
-        try:
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS await_username_reward VARCHAR(100) DEFAULT NULL;")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_step VARCHAR(50) DEFAULT NULL;")
-        except: pass
         
         cur.execute("""
             CREATE TABLE IF NOT EXISTS force_channels (
@@ -41,11 +40,10 @@ def init_db():
         """)
         conn.commit()
         
-        cur.execute("SELECT COUNT(*) FROM force_channels")
-        if cur.fetchone()[0] == 0:
-            cur.execute("INSERT INTO force_channels VALUES ('@Poneix') ON CONFLICT DO NOTHING")
-            cur.execute("INSERT INTO force_channels VALUES ('@BET_1XZX') ON CONFLICT DO NOTHING")
-            conn.commit()
+        # تزریق چنل‌های پیش‌فرض (اگر نبودن، اضافه میشن)
+        for ch in DEFAULT_CHANNELS:
+            cur.execute("INSERT INTO force_channels (channel_username) VALUES (%s) ON CONFLICT DO NOTHING", (ch,))
+        conn.commit()
             
         cur.close()
         conn.close()
@@ -62,7 +60,7 @@ def get_force_channels():
         conn.close()
         return channels
     except:
-        return ["@Poneix", "@BET_1XZX"]
+        return DEFAULT_CHANNELS
 
 def get_user(user_id):
     try:
@@ -115,7 +113,6 @@ def main_keyboard():
         types.KeyboardButton("پریمیوم ۳ ماهه"),
         types.KeyboardButton("پریمیوم ۶ ماهه"),
         types.KeyboardButton("پریمیوم ۱۲ ماهه"),
-        types.KeyboardButton("گیفت تدی"),
     )
     return markup
 
@@ -163,7 +160,7 @@ def start(message):
             except:
                 pass
 
-    # مستقیم چک عضویت
+    # چک عضویت
     not_joined = check_channels(user_id)
     if not not_joined:
         if not user.get("is_verified"):
@@ -180,16 +177,12 @@ def check_join(call):
     
     if not not_joined:
         update_user(user_id, is_verified=True)
-        # ۱. پاک کردن پیام عضویت
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
             pass
         
-        # ۲. ارسال پیام تایید
         bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.")
-        
-        # ۳. ارسال کیبورد اصلی در یک پیام جداگانه (تضمینی)
         bot.send_message(call.message.chat.id, "👇 از منو زیر انتخاب کن:", reply_markup=main_keyboard())
     else:
         bot.answer_callback_query(call.id, f"❌ هنوز عضو اینا نشدی: {', '.join(not_joined)}", show_alert=True)
@@ -212,7 +205,6 @@ REWARDS = {
     "پریمیوم ۳ ماهه": 30,
     "پریمیوم ۶ ماهه": 50,
     "پریمیوم ۱۲ ماهه": 90,
-    "گیفت تدی": 12,
 }
 
 @bot.message_handler(func=lambda m: m.text in REWARDS)
@@ -236,6 +228,11 @@ def handle_reward(message):
             f"لطفاً آیدی یوزرنیم خود را بفرستید (مثال: @username):")
     else:
         bot.reply_to(message, "خطا در کسر امتیاز.")
+
+# هندل کردن دکمه حذف شده گیفت تدی برای کسایی که هنوز دکمه قدیمی رو دارن
+@bot.message_handler(func=lambda m: m.text == "گیفت تدی")
+def handle_removed_gift(message):
+    bot.reply_to(message, "این گزینه موقتاً غیرفعال شده است. لطفاً از منوی جدید استفاده کنید.", reply_markup=main_keyboard())
 
 @bot.message_handler(func=lambda m: get_user(m.from_user.id) and get_user(m.from_user.id).get("await_username_reward"))
 def receive_username(message):
