@@ -1,4 +1,5 @@
 import os
+import time
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import telebot
@@ -7,12 +8,15 @@ from telebot import types
 # --- تنظیمات ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-OWNER_ID = 8291994828
 
-# چنل‌های پیش‌فرض (چنل جدید اینجا اضافه شد)
+# لیست مالکین (هر دو نفر)
+OWNERS = [8291994828, 8935601841]
+
 DEFAULT_CHANNELS = ["@Poneix", "@BET_1XZX", "@TABADL_MOD"]
 
 bot = telebot.TeleBot(BOT_TOKEN)
+# دیکشنری برای استیت‌های ادمین (چون گیت‌هاب استیت دیتابیس رو طولانی نگه نمیداره)
+admin_states = {}
 
 # --- اتصال به دیتابیس ---
 def get_db():
@@ -28,8 +32,7 @@ def init_db():
                 points INT DEFAULT 0,
                 is_verified BOOLEAN DEFAULT FALSE,
                 referrals INT DEFAULT 0,
-                await_username_reward VARCHAR(100) DEFAULT NULL,
-                admin_step VARCHAR(50) DEFAULT NULL
+                await_username_reward VARCHAR(100) DEFAULT NULL
             );
         """)
         
@@ -38,9 +41,17 @@ def init_db():
                 channel_username VARCHAR(255) PRIMARY KEY
             );
         """)
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS discount_codes (
+                code VARCHAR(50) PRIMARY KEY,
+                points INT NOT NULL,
+                max_uses INT NOT NULL,
+                used_count INT DEFAULT 0
+            );
+        """)
         conn.commit()
         
-        # تزریق چنل‌های پیش‌فرض (اگر نبودن، اضافه میشن)
         for ch in DEFAULT_CHANNELS:
             cur.execute("INSERT INTO force_channels (channel_username) VALUES (%s) ON CONFLICT DO NOTHING", (ch,))
         conn.commit()
@@ -77,7 +88,7 @@ def get_user(user_id):
         return user
     except Exception as e:
         print("DB Get User Error:", e)
-        return {"user_id": user_id, "points": 0, "is_verified": False, "referrals": 0, "await_username_reward": None, "admin_step": None}
+        return {"user_id": user_id, "points": 0, "is_verified": False, "referrals": 0, "await_username_reward": None}
 
 def update_user(user_id, **kwargs):
     if not kwargs: return
@@ -113,6 +124,7 @@ def main_keyboard():
         types.KeyboardButton("پریمیوم ۳ ماهه"),
         types.KeyboardButton("پریمیوم ۶ ماهه"),
         types.KeyboardButton("پریمیوم ۱۲ ماهه"),
+        types.KeyboardButton("وارد کردن کد تخفیف"),
     )
     return markup
 
@@ -120,6 +132,9 @@ def admin_keyboard():
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("➕ اضافه کردن جوین اجباری", callback_data="admin_add_channel"))
     markup.add(types.InlineKeyboardButton("➖ حذف کردن جوین اجباری", callback_data="admin_del_channel"))
+    markup.add(types.InlineKeyboardButton("🎫 ساخت کد تخفیف", callback_data="admin_create_code"))
+    markup.add(types.InlineKeyboardButton("🗑️ حذف کد تخفیف", callback_data="admin_delete_code"))
+    markup.add(types.InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"))
     return markup
 
 def check_channels(user_id):
@@ -142,13 +157,12 @@ def show_join_buttons(chat_id, channels):
     markup.add(types.InlineKeyboardButton("✅ عضو شدم", callback_data="check_join"))
     bot.send_message(chat_id, "⚠️ برای استفاده از ربات، ابتدا باید در چنل‌های زیر عضو شوید:", reply_markup=markup)
 
-# --- استارت (بدون کپچا) ---
+# --- استارت ---
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
     user = get_user(user_id)
 
-    # رفرال
     args = message.text.split()
     if len(args) > 1 and args[1].isdigit():
         referrer_id = int(args[1])
@@ -160,7 +174,6 @@ def start(message):
             except:
                 pass
 
-    # چک عضویت
     not_joined = check_channels(user_id)
     if not not_joined:
         if not user.get("is_verified"):
@@ -169,7 +182,6 @@ def start(message):
     else:
         show_join_buttons(message.chat.id, not_joined)
 
-# --- چک عضویت (بعد از زدن دکمه عضو شدم) ---
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join(call):
     user_id = call.from_user.id
@@ -177,10 +189,8 @@ def check_join(call):
     
     if not not_joined:
         update_user(user_id, is_verified=True)
-        try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            pass
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except: pass
         
         bot.send_message(call.message.chat.id, "✅ تایید شد! خوش اومدی داداش.")
         bot.send_message(call.message.chat.id, "👇 از منو زیر انتخاب کن:", reply_markup=main_keyboard())
@@ -229,11 +239,54 @@ def handle_reward(message):
     else:
         bot.reply_to(message, "خطا در کسر امتیاز.")
 
-# هندل کردن دکمه حذف شده گیفت تدی برای کسایی که هنوز دکمه قدیمی رو دارن
 @bot.message_handler(func=lambda m: m.text == "گیفت تدی")
 def handle_removed_gift(message):
     bot.reply_to(message, "این گزینه موقتاً غیرفعال شده است. لطفاً از منوی جدید استفاده کنید.", reply_markup=main_keyboard())
 
+# --- بخش کد تخفیف (کاربر) ---
+@bot.message_handler(func=lambda m: m.text == "وارد کردن کد تخفیف")
+def ask_discount_code(message):
+    admin_states[message.from_user.id] = {"step": "awaiting_discount_code"}
+    bot.reply_to(message, "لطفاً کد تخفیف خود را وارد کنید:")
+
+@bot.message_handler(func=lambda m: admin_states.get(m.from_user.id, {}).get("step") == "awaiting_discount_code")
+def process_discount_code(message):
+    user_id = message.from_user.id
+    code = message.text.strip()
+    
+    if user_id in admin_states: del admin_states[user_id]
+    
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM discount_codes WHERE code = %s", (code,))
+        row = cur.fetchone()
+        
+        if not row:
+            bot.reply_to(message, "❌ کد تخفیف نامعتبر است.")
+            cur.close()
+            conn.close()
+            return
+            
+        if row["used_count"] >= row["max_uses"]:
+            bot.reply_to(message, "❌ این کد تخفیف منقضی شده است (ظرفیت تکمیل).")
+            cur.close()
+            conn.close()
+            return
+            
+        new_points = get_user(user_id).get("points", 0) + row["points"]
+        cur.execute("UPDATE discount_codes SET used_count = used_count + 1 WHERE code = %s", (code,))
+        cur.execute("UPDATE users SET points = %s WHERE user_id = %s", (new_points, user_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        bot.reply_to(message, f"✅ کد تخفیف با موفقیت اعمال شد!\n🎁 {row['points']} سکه به حساب شما اضافه شد.", reply_markup=main_keyboard())
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطا در پردازش کد: {e}")
+
+# --- بخش ثبت یوزرنیم جایزه ---
 @bot.message_handler(func=lambda m: get_user(m.from_user.id) and get_user(m.from_user.id).get("await_username_reward"))
 def receive_username(message):
     user_id = message.from_user.id
@@ -252,12 +305,17 @@ def receive_username(message):
         types.InlineKeyboardButton("✅ تایید", callback_data=f"approve_{user_id}"),
         types.InlineKeyboardButton("❌ رد", callback_data=f"reject_{user_id}"),
     )
-    bot.send_message(OWNER_ID, text, reply_markup=markup)
+    
+    for owner in OWNERS:
+        try:
+            bot.send_message(owner, text, reply_markup=markup)
+        except: pass
+        
     bot.reply_to(message, "درخواست برای مالک ارسال شد. منتظر تایید باش.")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith(('approve_', 'reject_')))
 def owner_action(call):
-    if call.from_user.id != OWNER_ID:
+    if call.from_user.id not in OWNERS:
         bot.answer_callback_query(call.id, "مخصوص مالک است.")
         return
     action, uid = call.data.split('_')
@@ -272,34 +330,177 @@ def owner_action(call):
 # --- پنل ادمین ---
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
-    if message.from_user.id != OWNER_ID:
+    if message.from_user.id not in OWNERS:
         bot.reply_to(message, "❌ دسترسی ندارید.")
         return
     bot.send_message(message.chat.id, "👨‍💻 پنل مدیریت:", reply_markup=admin_keyboard())
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('admin_'))
 def admin_callbacks(call):
-    if call.from_user.id != OWNER_ID: return
+    if call.from_user.id not in OWNERS: return
     
     action = call.data
     if action == "admin_add_channel":
-        update_user(OWNER_ID, admin_step="add_channel")
-        bot.send_message(OWNER_ID, "لطفاً آیدی چنل را با @ بفرستید:")
+        admin_states[call.from_user.id] = {"step": "add_channel"}
+        bot.send_message(call.from_user.id, "لطفاً آیدی چنل را با @ بفرستید:")
         bot.answer_callback_query(call.id)
+        
     elif action == "admin_del_channel":
         channels = get_force_channels()
         if not channels:
-            bot.send_message(OWNER_ID, "هیچ چنلی ثبت نشده است.")
+            bot.send_message(call.from_user.id, "هیچ چنلی ثبت نشده است.")
             return
         markup = types.InlineKeyboardMarkup()
         for ch in channels:
             markup.add(types.InlineKeyboardButton(f"❌ حذف {ch}", callback_data=f"delch_{ch}"))
-        bot.send_message(OWNER_ID, "کدام چنل حذف شود؟", reply_markup=markup)
+        bot.send_message(call.from_user.id, "کدام چنل حذف شود؟", reply_markup=markup)
+        bot.answer_callback_query(call.id)
+        
+    elif action == "admin_create_code":
+        admin_states[call.from_user.id] = {"step": "create_code_1"}
+        bot.send_message(call.from_user.id, "🎫 کد تخفیف را بنویسید (مثال: OFF100):")
+        bot.answer_callback_query(call.id)
+        
+    elif action == "admin_delete_code":
+        admin_states[call.from_user.id] = {"step": "delete_code"}
+        bot.send_message(call.from_user.id, "🗑️ کد تخفیفی که می‌خواهی حذف کنی را وارد کن:")
+        bot.answer_callback_query(call.id)
+        
+    elif action == "admin_broadcast":
+        admin_states[call.from_user.id] = {"step": "broadcast"}
+        bot.send_message(call.from_user.id, "📢 پیامی که می‌خواهی برای همه کاربران ارسال شود را بنویس:")
         bot.answer_callback_query(call.id)
 
-@bot.message_handler(func=lambda m: get_user(m.from_user.id) and get_user(m.from_user.id).get("admin_step") == "add_channel")
+# --- ساخت کد تخفیف ---
+@bot.message_handler(func=lambda m: admin_states.get(m.from_user.id, {}).get("step") == "create_code_1")
+def admin_code_step1(message):
+    if message.from_user.id not in OWNERS: return
+    code = message.text.strip()
+    
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM discount_codes WHERE code = %s", (code,))
+        if cur.fetchone():
+            bot.reply_to(message, "❌ این کد قبلا ساخته شده! یه کد دیگه بفرست:")
+            cur.close()
+            conn.close()
+            return
+        cur.close()
+        conn.close()
+    except: pass
+
+    admin_states[message.from_user.id]["code"] = code
+    admin_states[message.from_user.id]["step"] = "create_code_2"
+    bot.reply_to(message, f"✅ کد `{code}` ثبت شد.\nحالا چند سکه به کاربر اضافه شود؟ (فقط عدد بفرست)", parse_mode="Markdown")
+
+@bot.message_handler(func=lambda m: admin_states.get(m.from_user.id, {}).get("step") == "create_code_2")
+def admin_code_step2(message):
+    if message.from_user.id not in OWNERS: return
+    try:
+        points = int(message.text.strip())
+    except:
+        bot.reply_to(message, "❌ لطفاً فقط عدد بفرستید (مثلا 10):")
+        return
+        
+    admin_states[message.from_user.id]["points"] = points
+    admin_states[message.from_user.id]["step"] = "create_code_3"
+    bot.reply_to(message, f"✅ {points} سکه ثبت شد.\nچند نفر می‌توانند از این کد استفاده کنند؟ (فقط عدد بفرست)")
+
+@bot.message_handler(func=lambda m: admin_states.get(m.from_user.id, {}).get("step") == "create_code_3")
+def admin_code_step3(message):
+    if message.from_user.id not in OWNERS: return
+    try:
+        max_uses = int(message.text.strip())
+    except:
+        bot.reply_to(message, "❌ لطفاً فقط عدد بفرستید (مثلا 50):")
+        return
+        
+    state = admin_states.get(message.from_user.id)
+    code = state["code"]
+    points = state["points"]
+    
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO discount_codes (code, points, max_uses, used_count) VALUES (%s, %s, %s, 0)", 
+                    (code, points, max_uses))
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        bot.reply_to(message, f"✅ کد تخفیف با موفقیت ساخته شد!\n\n"
+                              f"🎫 کد: `{code}`\n"
+                              f"🪙 سکه: {points}\n"
+                              f"👥 ظرفیت: {max_uses} نفر", parse_mode="Markdown")
+                              
+        del admin_states[message.from_user.id]
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطا در ذخیره کد: {e}")
+
+# --- حذف کد تخفیف ---
+@bot.message_handler(func=lambda m: admin_states.get(m.from_user.id, {}).get("step") == "delete_code")
+def admin_delete_code(message):
+    if message.from_user.id not in OWNERS: return
+    code = message.text.strip()
+    
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM discount_codes WHERE code = %s RETURNING code", (code,))
+        deleted = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        if deleted:
+            bot.reply_to(message, f"✅ کد تخفیف `{code}` با موفقیت حذف شد.", parse_mode="Markdown")
+        else:
+            bot.reply_to(message, f"❌ کد تخفیف `{code}` پیدا نشد.", parse_mode="Markdown")
+            
+        del admin_states[message.from_user.id]
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطا در حذف کد: {e}")
+
+# --- پیام همگانی ---
+@bot.message_handler(func=lambda m: admin_states.get(m.from_user.id, {}).get("step") == "broadcast")
+def admin_broadcast(message):
+    if message.from_user.id not in OWNERS: return
+    
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM users")
+        users = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطا در دریافت کاربران: {e}")
+        return
+        
+    bot.reply_to(message, f"⏳ در حال ارسال پیام به {len(users)} کاربر...")
+    
+    success = 0
+    failed = 0
+    for u in users:
+        try:
+            bot.send_message(u[0], message.text)
+            success += 1
+            time.sleep(0.05) # جلوگیری از بلاک شدن توسط تلگرام
+        except:
+            failed += 1
+            
+    bot.reply_to(message, f"✅ پیام همگانی ارسال شد.\n\n"
+                          f"موفق: {success}\n"
+                          f"ناموفق (بلاک کردن ربات): {failed}")
+                          
+    if message.from_user.id in admin_states:
+        del admin_states[message.from_user.id]
+
+# --- جوین اجباری (ادمین) ---
+@bot.message_handler(func=lambda m: admin_states.get(m.from_user.id, {}).get("step") == "add_channel")
 def admin_add_channel_receive(message):
-    if message.from_user.id != OWNER_ID: return
+    if message.from_user.id not in OWNERS: return
     ch = message.text.strip()
     if not ch.startswith("@"): ch = "@" + ch
     try:
@@ -314,13 +515,13 @@ def admin_add_channel_receive(message):
         cur.close()
         conn.close()
         bot.reply_to(message, f"✅ چنل {ch} با موفقیت اضافه شد.")
-        update_user(OWNER_ID, admin_step=None)
+        del admin_states[message.from_user.id]
     except Exception as e:
         bot.reply_to(message, f"❌ خطا: {e}")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith('delch_'))
 def admin_delete_channel(call):
-    if call.from_user.id != OWNER_ID: return
+    if call.from_user.id not in OWNERS: return
     ch = call.data.replace("delch_", "")
     try:
         conn = get_db()
